@@ -22,7 +22,7 @@ TOKEN   = os.getenv("AWIN_TOKEN")
 PUB_ID  = os.getenv("AWIN_PUBLISHER_ID")
 COUNTRY = os.getenv("AWIN_COUNTRY", "SE")
 REGION  = os.getenv("AWIN_REGION", "SE")
-DB      = "state.sqlite3"
+DB = os.getenv("DB_PATH", "state.sqlite3")
 
 # ---- AWIN product feed settings ----
 AWIN_FEED_APIKEY  = os.getenv("AWIN_FEED_APIKEY", "").strip()
