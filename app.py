@@ -6,6 +6,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 import streamlit as st
 
+# ✅ MUST be first Streamlit call
+st.set_page_config(
+    page_title="Publisher Dashboard",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
 # -------------------- Setup & config --------------------
 load_dotenv()
 
@@ -16,6 +23,7 @@ try:
 except Exception:
     pass
 
+st.title("Publisher Dashboard")
 
 API_BASE = "https://api.awin.com"
 TOKEN   = os.getenv("AWIN_TOKEN")
@@ -47,13 +55,6 @@ ALERT_COOLDOWN_MIN    = int(os.getenv("ALERT_COOLDOWN_MIN", "60"))
 FEED_ALERT_STATE = {}  # throttle feed-failure emails per country
 
 DB_LOCK = threading.Lock()
-
-st.set_page_config(
-    page_title="Publisher Dashboard",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-st.title("Publisher Dashboard")
 
 # -------------------- DB --------------------
 def db():
