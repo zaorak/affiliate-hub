@@ -958,7 +958,7 @@ def get_earnings(region=None, start_date=None, end_date=None, tz="UTC"):
 
     # Normalize region to a comma string like "FR,ES"
     if region is None:
-        region = (os.getenv("AWIN_REGION") or os.getenv("AWIN_COUNTRY") or "FR")
+        region = (os.getenv("AWIN_REGION") or "")
     if isinstance(region, (list, tuple, set)):
         region_str = ",".join(str(x) for x in region)
     else:
@@ -1240,7 +1240,7 @@ with st.sidebar:
     )
     region_input = st.text_input(
         "Region(s) for earnings (comma-separated ISO-2)",
-        value=os.getenv("AWIN_REGION", REGION)
+        value=os.getenv("AWIN_REGION", "").strip()
     )
 
     # Time window
