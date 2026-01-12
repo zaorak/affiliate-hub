@@ -1240,7 +1240,8 @@ with st.sidebar:
     )
     region_input = st.text_input(
         "Region(s) for earnings (comma-separated ISO-2)",
-        value=os.getenv("AWIN_REGION", "").strip()
+        value="",
+        key="region_input_v2"
     )
 
     # Time window
