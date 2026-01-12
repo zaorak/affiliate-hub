@@ -1239,9 +1239,8 @@ with st.sidebar:
         value=os.getenv("AWIN_COUNTRY", COUNTRY)
     )
     region_input = st.text_input(
-        "Region(s) for earnings (comma-separated ISO-2)",
-        value="",
-        key="region_input_v2"
+        "Region(s) for earnings (comma-separated ISO-2) — leave blank = use Country/ies",
+        value=os.getenv("AWIN_REGION", "").strip()
     )
 
     # Time window
@@ -1352,9 +1351,10 @@ if "AWIN" in networks:
                 contains=match_contains,
             )
         else:
+            # ✅ Region is REQUIRED by AWIN advertiser report.
+            # If user leaves region empty, fall back to countries_list.
             region_for_earnings = (region_input or "").strip()
             if not region_for_earnings:
-                # fallback til countries_list (fx "DK,SE,NO")
                 region_for_earnings = ",".join(countries_list)
 
             awin_metrics = get_earnings(
