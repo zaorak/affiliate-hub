@@ -1352,8 +1352,13 @@ if "AWIN" in networks:
                 contains=match_contains,
             )
         else:
+            region_for_earnings = (region_input or "").strip()
+            if not region_for_earnings:
+                # fallback til countries_list (fx "DK,SE,NO")
+                region_for_earnings = ",".join(countries_list)
+
             awin_metrics = get_earnings(
-                region_input, start.isoformat(), end.isoformat(), tz="UTC"
+                region_for_earnings, start.isoformat(), end.isoformat(), tz="UTC"
             )
     except Exception as e:
         st.warning(f"AWIN earnings failed: {e}")
