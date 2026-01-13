@@ -1281,6 +1281,12 @@ with st.sidebar:
         else:
             st.success(f"Synced & checked alerts for: {', '.join(countries)}")
 
+    if st.button("Clear cache (force reload)"):
+        st.cache_data.clear()
+        st.success("Cache cleared. Reloading…")
+        st.rerun()
+
+
     # SMTP test
     if st.button("Send test email"):
         ok, info = send_email(
@@ -1873,10 +1879,14 @@ def addrev_list_advertisers(country_code: str | None):
 
     return norm, (used_path or "")
 
+@st.cache_data(show_spinner=False, ttl=6*60*60)  # 6 timer
+def cached_addrev_list_advertisers(country_code: str | None):
+    return addrev_list_advertisers(country_code)
+
 def render_addrev_merchants_table(country_code: str):
     try:
         # Hent basisliste over advertisers/relations (din eksisterende helper)
-        rows, used_path = addrev_list_advertisers(country_code)
+        rows, used_path = cached_addrev_list_advertisers(country_code)
 
         # Hent feeds og tracking links pr. advertiser for din kanal (hvis sat)
         feeds_map = addrev_product_feeds_by_adv(ADDREV_CHANNEL_ID) if ADDREV_CHANNEL_ID else {}
@@ -1978,6 +1988,11 @@ def partnerize_participations() -> list[dict]:
         return []
 
     all_norm: list[dict] = []
+
+    @st.cache_data(show_spinner=False, ttl=6*60*60)  # 6 timer
+    def cached_partnerize_participations():
+        return partnerize_participations()
+
 
     # ---------- PRIMÆR: v3 /participations ----------
     try:
@@ -2269,7 +2284,7 @@ def render_partnerize_merchants_table(country_code: str, only_with_feeds: bool =
         )
         return
 
-    programs = partnerize_participations()
+    programs = cached_partnerize_participations()
 
     # Prøv at hente feeds; hvis det fejler, viser vi blot uden Feed CSV
     try:
@@ -2499,10 +2514,11 @@ def impact_simple_programs() -> list[dict]:
             break  # safety
 
     return all_rows
+    
+    @st.cache_data(show_spinner=False, ttl=6*60*60)  # 6 timer
+    def cached_impact_programs():
+    return impact_simple_programs()
 
-
-@st.cache_data(show_spinner=False, ttl=1800)
-def impact_simple_catalog_feeds() -> dict[str, list[str]]:
     """
     Hent Catalogs og byg et map:
       { CampaignId (str): [feed_urls,...] }
@@ -2580,7 +2596,7 @@ def render_impact_merchants_simple(country_code: str):
         )
         return
 
-    programs = impact_simple_programs()
+    programs = cached_impact_programs()
     feeds_by_campaign = impact_simple_catalog_feeds()
 
     if not programs:
