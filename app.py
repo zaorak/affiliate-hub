@@ -96,7 +96,7 @@ def get_programmes(country_code: str):
     r.raise_for_status()
     return r.json()
 
-@st.cache_data(show_spinner=False, ttl=60*60*6)  # 6 timer
+@st.cache_data(show_spinner=False, ttl=12*60*60)  # 12 timer
 def cached_awin_programmes(country_code: str):
     return get_programmes(country_code)
 
@@ -1885,7 +1885,7 @@ def addrev_list_advertisers(country_code: str | None):
 
     return norm, (used_path or "")
 
-@st.cache_data(show_spinner=False, ttl=6*60*60)  # 6 timer
+@st.cache_data(show_spinner=False, ttl=12*60*60)  # 12 timer
 def cached_addrev_list_advertisers(country_code: str | None):
     return addrev_list_advertisers(country_code)
 
