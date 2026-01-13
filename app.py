@@ -529,7 +529,6 @@ def impact_list_programs() -> list[dict]:
 
     return all_rows
 
-
 @st.cache_data(show_spinner=False, ttl=1800)
 def impact_catalog_feeds_by_campaign() -> dict[str, list[str]]:
     """
@@ -593,6 +592,10 @@ def impact_catalog_feeds_by_campaign() -> dict[str, list[str]]:
 
     return feeds
 
+@st.cache_data(show_spinner=False, ttl=6*60*60)  # 6 timer
+def cached_impact_programs():
+    # Brug den simple programs-funktion (den du bruger i render_impact_merchants_simple)
+    return impact_simple_programs()
 
 def render_impact_merchants_simple(country_code: str):
     """
