@@ -25,6 +25,82 @@ except Exception:
 
 st.title("Publisher Dashboard")
 
+# -------------------- Warmup (preload caches) --------------------
+def _get_query_param(name: str) -> str:
+    # Kompatibel med både nye og gamle Streamlit versioner
+    try:
+        v = st.query_params.get(name, "")
+        if isinstance(v, list):
+            return str(v[0]) if v else ""
+        return str(v)
+    except Exception:
+        try:
+            qp = st.experimental_get_query_params()
+            v = qp.get(name, [""])
+            return str(v[0]) if v else ""
+        except Exception:
+            return ""
+
+is_warmup = _get_query_param("warmup") == "1"
+
+if is_warmup:
+    # Brug samme countries som du kører normalt
+    env_countries = os.getenv("AWIN_COUNTRY", COUNTRY)
+    warm_countries = [c.strip().upper() for c in env_countries.split(",") if c.strip()]
+
+    # AWIN programmes (per country)
+    for cc in warm_countries:
+        try:
+            cached_awin_programmes(cc)
+        except Exception:
+            pass
+
+    # AWIN feeds list (hvis du har cached wrapper)
+    try:
+        # hvis du bruger cached_awin_feed_rows()
+        cached_awin_feed_rows()
+    except Exception:
+        pass
+
+    # Addrevenue advertisers/relations (per country)
+    for cc in warm_countries:
+        try:
+            cached_addrev_list_advertisers(cc)
+        except Exception:
+            pass
+
+    # Impact (global)
+    try:
+        cached_impact_programs()
+    except Exception:
+        pass
+
+    # Impact catalogs/feeds
+    try:
+        # hvis du har wrapper:
+        cached_impact_catalog_feeds_by_campaign()
+    except Exception:
+        try:
+            # hvis du bruger direkte funktionen:
+            impact_catalog_feeds_by_campaign()
+        except Exception:
+            pass
+
+    # Partnerize (global)
+    try:
+        cached_partnerize_participations()
+    except Exception:
+        pass
+
+    try:
+        cached_partnerize_feeds_by_campaign()
+    except Exception:
+        pass
+
+    st.write("Warmup complete")
+    st.stop()
+# -------------------- End warmup --------------------
+
 API_BASE = "https://api.awin.com"
 TOKEN   = os.getenv("AWIN_TOKEN")
 PUB_ID  = os.getenv("AWIN_PUBLISHER_ID")
