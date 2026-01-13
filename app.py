@@ -2085,15 +2085,21 @@ def partnerize_participations() -> list[dict]:
             params = {
                 "page": page,
                 "page_size": page_size,
-                # Vi beder eksplicit om de felter, vi har brug for:
+                # VIGTIGT: Partnerize returnerer ofte kun approved som default.
+                # Vi beder om alle relation-statusser + også retired campaigns.
+                "status[]": ["a", "p", "t", "r"],          # approved, pending, invited, rejected
+                "campaign_status[]": ["a", "r"],           # active + retired
+
                 "fields[]": [
                     "status",
                     "default_currency",
                     "promotional_countries",
                     "campaign_info",
+                    "network_status",
+                    "brand_id",
                 ],
-            }
-
+}
+        
             data = partnerize_get(
                 f"/v3/partner/{PARTNERIZE_PUBLISHER_ID}/participations",
                 params=params,
