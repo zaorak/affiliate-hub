@@ -594,8 +594,11 @@ def impact_catalog_feeds_by_campaign() -> dict[str, list[str]]:
 
 @st.cache_data(show_spinner=False, ttl=6*60*60)  # 6 timer
 def cached_impact_programs():
-    # Brug den simple programs-funktion (den du bruger i render_impact_merchants_simple)
-    return impact_simple_programs()
+    return impact_list_programs()
+
+@st.cache_data(show_spinner=False, ttl=12*60*60)  # 12 timer
+def cached_impact_catalog_feeds_by_campaign():
+    return impact_catalog_feeds_by_campaign()
 
 def render_impact_merchants_simple(country_code: str):
     """
@@ -615,7 +618,7 @@ def render_impact_merchants_simple(country_code: str):
         return
 
     programs = impact_simple_programs()
-    feeds_by_campaign = impact_simple_catalog_feeds()
+    feeds_by_campaign = impact_catalog_feeds_by_campaign()
 
     if not programs:
         st.info("Impact API returned no campaigns for this account.")
@@ -2600,7 +2603,7 @@ def render_impact_merchants_simple(country_code: str):
         return
 
     programs = cached_impact_programs()
-    feeds_by_campaign = impact_simple_catalog_feeds()
+    feeds_by_campaign = cached_impact_catalog_feeds_by_campaign()
 
     if not programs:
         st.info("Impact API returned no campaigns for this account.")
