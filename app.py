@@ -2071,7 +2071,7 @@ def partnerize_participations() -> list[dict]:
 
     all_norm: list[dict] = []
 
-    @st.cache_data(show_spinner=False, ttl=6*60*60)  # 6 timer
+    @st.cache_data(show_spinner=False, ttl=12*60*60)  # 12 timer
     def cached_partnerize_participations():
         return partnerize_participations()
 
@@ -2366,7 +2366,7 @@ def render_partnerize_merchants_table(country_code: str, only_with_feeds: bool =
         )
         return
 
-    programs = cached_partnerize_participations()
+    programs = partnerize_participations()
 
     # Prøv at hente feeds; hvis det fejler, viser vi blot uden Feed CSV
     try:
