@@ -96,6 +96,10 @@ def get_programmes(country_code: str):
     r.raise_for_status()
     return r.json()
 
+@st.cache_data(show_spinner=False, ttl=60*60*6)  # 6 timer
+def cached_awin_programmes(country_code: str):
+    return get_programmes(country_code)
+
 def get_fx_rate(base: str, target: str) -> float:
     if not base or not target or base.upper() == target.upper():
         return 1.0
@@ -1690,7 +1694,7 @@ def render_awin_merchants_table(
     only_with_feeds: bool = True,   # sidebar flag
 ):
     try:
-        progs = get_programmes(country_code)
+        progs = cached_awin_programmes(country_code)
         seq = progs if isinstance(progs, list) else progs.get("programmes", [])
         if not isinstance(seq, list):
             seq = []
