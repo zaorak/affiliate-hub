@@ -485,6 +485,8 @@ PARTNERIZE_API_KEY = (
 
 PARTNERIZE_PUBLISHER_ID = (os.getenv("PARTNERIZE_PUBLISHER_ID") or "").strip()
 
+PARTNERIZE_PARTNER_ID = (os.getenv("PARTNERIZE_PARTNER_ID") or "").strip()
+
 def partnerize_commission_aggregate(
     start_date: str,
     end_date: str,
