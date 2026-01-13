@@ -2517,7 +2517,7 @@ def impact_simple_programs() -> list[dict]:
     
     @st.cache_data(show_spinner=False, ttl=6*60*60)  # 6 timer
     def cached_impact_programs():
-    return impact_simple_programs()
+        return impact_simple_programs()
 
     """
     Hent Catalogs og byg et map:
