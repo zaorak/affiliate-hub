@@ -1254,73 +1254,76 @@ def build_awin_feed_url(feed_id: str) -> str:
     return f"https://datafeed.api.productserve.com/datafeed/download/apikey/{key}/fid/{feed_id}/format/{fmt}/language/{lang}"
 
 @st.cache_data(show_spinner=False, ttl=43200, max_entries=1)
-def load_awin_feed_rows():
-    """Download & normalize the publisher Feed List CSV. Never raise; return []."""
+def load_awin_feed_map() -> dict[int, dict[str, str]]:
+    """
+    Returnerer et kompakt map:
+      { advertiser_id: { REGION: feed_url, "_any": feed_url } }
+
+    I stedet for at cache hele CSV’en som liste af dicts (RAM-tungt).
+    """
     if not AWIN_FEED_APIKEY:
-        return []
+        return {}
+
     url = f"https://productdata.awin.com/datafeed/list/apikey/{AWIN_FEED_APIKEY}"
     try:
-        r = requests.get(url, timeout=60); r.raise_for_status()
+        r = requests.get(url, timeout=60)
+        r.raise_for_status()
     except Exception:
-        return []
+        return {}
+
     text = r.text or ""
+
     # detect delimiter
     try:
         dialect = csv.Sniffer().sniff(text[:2048], delimiters=",;")
         delim = dialect.delimiter
     except Exception:
         delim = ","
+
+    feed_map: dict[int, dict[str, str]] = {}
     reader = csv.DictReader(io.StringIO(text), delimiter=delim)
-    rows = []
+
     for raw in reader:
-        d = { (k or "").strip(): (v or "").strip() for k, v in (raw or {}).items() }
-        adv_id = d.get("Advertiser ID") or d.get("advertiser id") or d.get("AdvertiserID") or ""
-        try: d["_adv_id"] = int(str(adv_id))
-        except Exception: d["_adv_id"] = None
-        d["_region"] = (d.get("Primary Region") or d.get("primary region") or "").strip().upper()
-        d["_status"] = (d.get("Membership Status") or d.get("membership status") or "").strip().lower()
-        rows.append(d)
-    return rows
+        d = {(k or "").strip(): (v or "").strip() for k, v in (raw or {}).items()}
 
-def find_best_feed_for_adv(feed_rows: list[dict], advertiser_id: int, country_code: str):
-    """Pick a sensible feed for an advertiser, preferring the requested country."""
-    if not feed_rows: return None
-    cc = (country_code or "").strip().upper()
-    cand = [r for r in feed_rows if r.get("_adv_id") == advertiser_id]
-    if not cand: return None
-    prefer = [r for r in cand if (r.get("_region") or "").upper() == cc] or cand
-    return prefer[0]
+        adv_id_raw = d.get("Advertiser ID") or d.get("advertiser id") or d.get("AdvertiserID") or ""
+        try:
+            adv_id = int(str(adv_id_raw))
+        except Exception:
+            continue
 
-def feed_url_from_row(row: dict) -> str:
-    """
-    Return the download URL if present; else construct from feedId.
-    If AWIN_FEED_FORMAT is xml, remove CSV-only params like delimiter.
-    """
-    fmt = (AWIN_FEED_FORMAT or "xml").strip().lower()
+        region = (d.get("Primary Region") or d.get("primary region") or "").strip().upper()
 
-    # 1) Prefer URL coming from Feed List CSV (it contains many params)
-    for k in ("Data feed download URL", "Download URL", "URL", "Url", "Datafeed URL"):
-        v = row.get(k)
-        if v:
-            url = str(v).strip()
-            if not url:
-                continue
+        # Kun aktive/brugbare feeds (best effort)
+        status = (d.get("Membership Status") or d.get("membership status") or "").strip().lower()
+        # hvis du vil være hårdere: if status not in ("active","joined","approved"): continue
 
-            # Replace format segment (csv/excel/xml -> fmt)
-            url = re.sub(r"/format/[^/]+/", f"/format/{fmt}/", url)
+        # Find URL (brug den hvis den findes)
+        feed_url = ""
+        for k in ("Data feed download URL", "Download URL", "URL", "Url", "Datafeed URL"):
+            v = d.get(k)
+            if v:
+                feed_url = v.strip()
+                break
 
-            # XML downloads must NOT have CSV delimiter params
-            if fmt.startswith("xml"):
-                url = re.sub(r"/delimiter/[^/]+", "", url)
+        # Ellers byg den fra feed id (sørg for at AWIN_FEED_FORMAT=xml i env)
+        if not feed_url:
+            feed_id = d.get("Feed ID") or d.get("feed id") or d.get("FeedID") or d.get("datafeed id")
+            if feed_id:
+                feed_url = build_awin_feed_url(str(feed_id).strip())
 
-            return url
+        if not feed_url:
+            continue
 
-    # 2) Fallback: build from feed id
-    feed_id = row.get("Feed ID") or row.get("feed id") or row.get("FeedID") or row.get("datafeed id")
-    if feed_id:
-        return build_awin_feed_url(str(feed_id).strip())
+        if adv_id not in feed_map:
+            feed_map[adv_id] = {}
 
-    return ""
+        # Gem pr region + en fallback
+        if region and region not in feed_map[adv_id]:
+            feed_map[adv_id][region] = feed_url
+        feed_map[adv_id].setdefault("_any", feed_url)
+
+    return feed_map
 
 @st.cache_data(show_spinner=False, ttl=43200)
 def cached_awin_tracking_link(advertiser_id: int, clickref: str | None = None) -> str:
@@ -1747,10 +1750,9 @@ def render_awin_merchants_table(
 
             # Feed URL (from preloaded feed list)
             feed_url = ""
-            if feed_rows and adv_id_int:
-                best = find_best_feed_for_adv(feed_rows, adv_id_int, country_code)
-                if best:
-                    feed_url = feed_url_from_row(best)
+            if feed_map and adv_id_int:
+                m = feed_map.get(adv_id_int) or {}
+                feed_url = m.get(country_code.strip().upper()) or m.get("_any") or ""
 
             # Proper tracking deeplink (cread.php)
             deeplink = awin_cread_link(adv_id_int, first_clickref, None)
@@ -2696,7 +2698,7 @@ if not countries_list:
     countries_list = [os.getenv("AWIN_COUNTRY", COUNTRY)]
 
 # Preload AWIN feed list once; pass to every tab
-feed_rows = load_awin_feed_rows()
+feed_map = load_awin_feed_rows()
 
 # First clickref for tracking link (AWIN)
 try:
