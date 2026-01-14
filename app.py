@@ -1369,9 +1369,6 @@ with st.sidebar:
     # Feed presence toggle
     show_with_feeds = st.checkbox("Show only programmes with product feeds", value=True)
 
-    # Debug toggle
-    show_debug = st.checkbox("Show earnings debug", value=False)
-
     # Manual sync + alerts (AWIN)
     if st.button("Refresh now"):
         input_text = (country_input or "").strip()
@@ -1394,19 +1391,6 @@ with st.sidebar:
         st.cache_data.clear()
         st.success("Cache cleared. Reloading…")
         st.rerun()
-
-
-    # SMTP test
-    if st.button("Send test email"):
-        ok, info = send_email(
-            "[AWIN] Test email from dashboard",
-            f"Hello! This is a test from your AWIN dashboard at {dt.datetime.utcnow().isoformat()}Z"
-        )
-        if ok:
-            st.success("Test email sent. Check your inbox.")
-        else:
-            st.error(f"Test email failed: {info}")
-
 # ---------- Earnings panel (networks merged) ----------
 end = dt.date.today()
 start = end - dt.timedelta(days=days)
@@ -1564,65 +1548,6 @@ c1, c2, c3 = st.columns(3)
 c1.metric(f"Total commission ({ccy})", fmt(total_comm))
 c2.metric(f"Confirmed commission ({ccy})", fmt(confirmed_comm))
 c3.metric(f"Pending commission ({ccy})", fmt(pending_comm))
-
-if show_debug:
-    with st.expander("Earnings debug"):
-        # --- aktive filtre ---
-        st.markdown("**Active filters**")
-        st.json(
-            {
-                "networks_selected": networks,
-                "countries": countries_list,
-                "date_window": {
-                    "start": start.isoformat(),
-                    "end": end.isoformat(),
-                },
-                "clickrefs_input": clickrefs,
-                "clickref_contains_match": match_contains,
-                "awin_mode": (
-                    "transactions"
-                    if ("AWIN" in networks and use_awin_tx)
-                    else "advertiser_report"
-                ),
-            }
-        )
-
-        # --- AWIN ---
-        st.markdown("**AWIN meta**")
-        st.json(awin_metrics.get("meta", {}))
-        st.markdown("**AWIN sample rows**")
-        st.json(awin_metrics.get("raw", [])[:3])
-
-        # --- Addrevenue ---
-        st.markdown("**Addrevenue meta**")
-        st.json(addrev_metrics.get("meta", {}))
-        st.markdown("**Addrevenue sample rows**")
-        st.json(addrev_metrics.get("raw", [])[:3])
-
-        # --- Impact ---
-        st.markdown("**Impact meta**")
-        st.json(impact_metrics.get("meta", {}))
-        st.markdown("**Impact sample rows**")
-        st.json(impact_metrics.get("raw", [])[:3])
-
-        # --- Partnerize earnings meta ---
-        st.markdown("**Partnerize meta**")
-        st.json(partnerize_metrics.get("meta", {}))
-        st.markdown("**Partnerize sample rows**")
-        st.json(partnerize_metrics.get("raw", [])[:3])
-
-        # --- Partnerize config check (env-variables) ---
-        st.markdown("**Partnerize config check**")
-        st.json(
-            {
-                "has_APP_KEY": bool(PARTNERIZE_APP_KEY),
-                "has_API_KEY": bool(PARTNERIZE_API_KEY),
-                "has_PUBLISHER_ID": bool(PARTNERIZE_PUBLISHER_ID),
-                "APP_KEY_len": len(PARTNERIZE_APP_KEY),
-                "API_KEY_len": len(PARTNERIZE_API_KEY),
-                "PUBLISHER_ID": PARTNERIZE_PUBLISHER_ID,
-            }
-        )
 
 # -------------------- Addrevenue: feeds + tracking helpers --------------------
 def _to_int_safe(x):
@@ -3009,29 +2934,6 @@ for i, cc in enumerate(countries_list, start=1):
         _render_country(cc)
 
 # -------------------- Alerts Log panel --------------------
-st.subheader("Alerts log (last 100)")
-try:
-    with DB_LOCK:
-        con = db(); cur = con.cursor()
-        cur.execute("SELECT ts, event, country, advertiser_id, name, email_sent, email_info, details FROM alert_log ORDER BY id DESC LIMIT 100")
-        rows = cur.fetchall(); con.close()
-    log_rows = [
-        {
-            "Time (UTC)": r[0],
-            "Event": r[1],
-            "Country": r[2],
-            "Advertiser ID": r[3],
-            "Name": r[4],
-            "Email sent": "Yes" if r[5] else "No",
-            "Email info": r[6],
-            "Details": r[7],
-        }
-        for r in rows
-    ]
-    st.dataframe(log_rows, use_container_width=True, height=320)
-except Exception as e:
-    st.error(f"Failed to read alerts log: {e}")
-
 st.caption(
     "Uses AWIN Publisher API (Programmes + Reports), Addrevenue API, "
     "Impact.com Partner API (Actions + Campaigns), and Partnerize Partner API "
