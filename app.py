@@ -485,7 +485,8 @@ PARTNERIZE_API_KEY = (
 
 PARTNERIZE_PUBLISHER_ID = (os.getenv("PARTNERIZE_PUBLISHER_ID") or "").strip()
 
-PARTNERIZE_PARTNER_ID = (os.getenv("PARTNERIZE_PARTNER_ID") or "").strip()
+# Partnerize: Partner ID = Publisher ID (per Partnerize support)
+PARTNERIZE_PARTNER_ID = (os.getenv("PARTNERIZE_PARTNER_ID") or PARTNERIZE_PUBLISHER_ID or "").strip()
 
 def partnerize_commission_aggregate(
     start_date: str,
@@ -607,7 +608,7 @@ def impact_list_programs() -> list[dict]:
 
     return all_rows
 
-@st.cache_data(show_spinner=False, ttl=1800)
+@st.cache_data(show_spinner=False, ttl=43200)
 def impact_catalog_feeds_by_campaign() -> dict[str, list[str]]:
     """
     Slår /Catalogs op og bygger et map:
@@ -1252,7 +1253,7 @@ def build_awin_feed_url(feed_id: str) -> str:
     # Awin feed download pattern (fid + format + language)
     return f"https://datafeed.api.productserve.com/datafeed/download/apikey/{key}/fid/{feed_id}/format/{fmt}/language/{lang}"
 
-@st.cache_data(show_spinner=False, ttl=1800, max_entries=1_000)
+@st.cache_data(show_spinner=False, ttl=43200, max_entries=1_000)
 def load_awin_feed_rows():
     """Download & normalize the publisher Feed List CSV. Never raise; return []."""
     if not AWIN_FEED_APIKEY:
@@ -1321,7 +1322,7 @@ def feed_url_from_row(row: dict) -> str:
 
     return ""
 
-@st.cache_data(show_spinner=False, ttl=3600)
+@st.cache_data(show_spinner=False, ttl=43200)
 def cached_awin_tracking_link(advertiser_id: int, clickref: str | None = None) -> str:
     """Return a UI Link-Builder URL (works without a destination URL)."""
     cref = quote((clickref or "").strip())
@@ -1557,7 +1558,7 @@ def _to_int_safe(x):
     except Exception:
         return None
 
-@st.cache_data(show_spinner=False, ttl=1800, max_entries=32)
+@st.cache_data(show_spinner=False, ttl=43200, max_entries=32)
 def addrev_feeds_by_advertiser():
     """
     Best-effort: hent alle product feeds og indeksér dem pr. advertiserId.
@@ -1642,7 +1643,7 @@ def addrev_pick_tracking_link(p: dict) -> str:
 
 # -------- Addrevenue feeds & tracking links (per advertiser) --------
 
-@st.cache_data(show_spinner=False, ttl=1800)
+@st.cache_data(show_spinner=False, ttl=43200)
 def addrev_product_feeds_by_adv(channel_id: str | int) -> dict[int, list[str]]:
     """
     Slår /productfeeds op og returnerer {advertiserId: [feed_urls,...]}.
@@ -1686,7 +1687,7 @@ def addrev_product_feeds_by_adv(channel_id: str | int) -> dict[int, list[str]]:
                     feeds_map[adv_id].append(u)
     return feeds_map
 
-@st.cache_data(show_spinner=False, ttl=1800)
+@st.cache_data(show_spinner=False, ttl=43200)
 def addrev_campaign_tracking_by_adv(channel_id: str | int) -> dict[int, str]:
     """
     Slår /campaigns?channelId=... op og vælger det første 'trackingLink' pr. advertiserId.
@@ -2038,23 +2039,12 @@ def partnerize_participations() -> list[dict]:
             params = {
                 "page": page,
                 "page_size": page_size,
-                # VIGTIGT: Partnerize returnerer ofte kun approved som default.
-                # Vi beder om alle relation-statusser + også retired campaigns.
-                "status[]": ["a", "p", "t", "r"],          # approved, pending, invited, rejected
-                "campaign_status[]": ["a", "r"],           # active + retired
-
-                "fields[]": [
-                    "status",
-                    "default_currency",
-                    "promotional_countries",
-                    "campaign_info",
-                    "network_status",
-                    "brand_id",
-                ],
+                "status": ["a", "p"],
+                "campaign_status": ["a"],
 }
         
             data = partnerize_get(
-                f"/v3/partner/{PARTNERIZE_PUBLISHER_ID}/participations",
+                f"/v3/partner/{PARTNERIZE_PARTNER_ID}/participations",
                 params=params,
             ) or {}
 
@@ -2223,7 +2213,7 @@ def partnerize_participations() -> list[dict]:
 
     return all_norm
 
-@st.cache_data(show_spinner=False, ttl=1800)
+@st.cache_data(show_spinner=False, ttl=43200)
 def partnerize_feeds_by_campaign() -> dict[str, list[str]]:
     """
     Slår Partnerize publisher feed API'et op og bygger map:
@@ -2947,26 +2937,3 @@ st.caption(
     "(conversions + participations + feeds). Product feeds shown via AWIN Feed List CSV, "
     "Addrevenue feeds, Impact Catalogs and Partnerize publisher feeds."
 )
-
-# -------------------- Scheduler (poll all countries) --------------------
-def poll_all():
-    env_countries = os.getenv("AWIN_COUNTRY", COUNTRY)
-    countries = [c.strip().upper() for c in env_countries.split(",") if c.strip()]
-    for c in countries:
-        try:
-            sync_and_alert(c)
-        except Exception as e:
-            print(f"[poll] {c}: {e}")
-
-if "apscheduler" not in st.session_state:
-    st.session_state["apscheduler"] = BackgroundScheduler(timezone=os.getenv("TZ", "UTC"))
-    st.session_state["apscheduler"].add_job(
-        poll_all,
-        "interval",
-        hours=3,
-        id="poll_awin",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
-    st.session_state["apscheduler"].start()
