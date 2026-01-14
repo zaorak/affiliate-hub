@@ -1253,7 +1253,7 @@ def build_awin_feed_url(feed_id: str) -> str:
     # Awin feed download pattern (fid + format + language)
     return f"https://datafeed.api.productserve.com/datafeed/download/apikey/{key}/fid/{feed_id}/format/{fmt}/language/{lang}"
 
-@st.cache_data(show_spinner=False, ttl=43200, max_entries=1_000)
+@st.cache_data(show_spinner=False, ttl=43200, max_entries=1)
 def load_awin_feed_rows():
     """Download & normalize the publisher Feed List CSV. Never raise; return []."""
     if not AWIN_FEED_APIKEY:
@@ -1331,13 +1331,6 @@ def cached_awin_tracking_link(advertiser_id: int, clickref: str | None = None) -
 # -------------------- SIDEBAR (define inputs FIRST) --------------------
 with st.sidebar:
     st.subheader("Filters")
-
-    search_query = st.text_input(
-        "Search merchant across all countries & networks",
-        value="",
-        placeholder="e.g. Helly Hansen",
-        key="merchant_search",
-    ).strip()
 
       # Networks
     network_options = ["AWIN", "Addrevenue", "Impact", "Partnerize"]
@@ -1558,7 +1551,7 @@ def _to_int_safe(x):
     except Exception:
         return None
 
-@st.cache_data(show_spinner=False, ttl=43200, max_entries=32)
+@st.cache_data(show_spinner=False, ttl=43200, max_entries=1)
 def addrev_feeds_by_advertiser():
     """
     Best-effort: hent alle product feeds og indeksér dem pr. advertiserId.
@@ -2762,12 +2755,6 @@ def _render_country(cc: str):
                 only_with_feeds=show_with_feeds,
             )
 
-def _render_search_results(q: str):
-    ql = (q or "").strip().lower()
-    if not ql:
-        st.info("Type a merchant name in the sidebar search to see results here.")
-        return
-
     st.subheader(f"Search results for: {q}")
 
     # ---------- AWIN (across all selected countries) ----------
@@ -2913,22 +2900,13 @@ def _render_search_results(q: str):
         else:
             st.caption("No Partnerize matches.")
 
-
-has_search = bool(search_query.strip())
-
-tab_labels = (["Search"] + countries_list) if has_search else countries_list
-tabs = st.tabs(tab_labels)
-
-tab_offset = 0
-
-if has_search:
-    with tabs[0]:
-        _render_search_results(search_query)
-    tab_offset = 1
-
-for i, cc in enumerate(countries_list):
-    with tabs[i + tab_offset]:
-        _render_country(cc)
+if len(countries_list) > 1:
+    country_tabs = st.tabs(countries_list)
+    for idx, cc in enumerate(countries_list):
+        with country_tabs[idx]:
+            _render_country(cc)
+else:
+    _render_country(countries_list[0])
 
 # -------------------- Alerts Log panel --------------------
 st.caption(
