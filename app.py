@@ -111,7 +111,7 @@ DB = os.getenv("DB_PATH", "state.sqlite3")
 # ---- AWIN product feed settings ----
 AWIN_FEED_APIKEY  = os.getenv("AWIN_FEED_APIKEY", "").strip()
 AWIN_FEED_LANG    = (os.getenv("AWIN_FEED_LANG") or "en").strip()
-AWIN_FEED_FORMAT  = (os.getenv("AWIN_FEED_FORMAT") or "csv").strip()
+AWIN_FEED_FORMAT  = (os.getenv("AWIN_FEED_FORMAT") or "xml").strip()
 
 # ---- SMTP / Alerts
 SMTP_HOST = os.getenv("SMTP_HOST")
