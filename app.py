@@ -2698,7 +2698,7 @@ if not countries_list:
     countries_list = [os.getenv("AWIN_COUNTRY", COUNTRY)]
 
 # Preload AWIN feed list once; pass to every tab
-feed_map = load_awin_feed_rows()
+feed_map = load_awin_feed_map()
 
 # First clickref for tracking link (AWIN)
 try:
