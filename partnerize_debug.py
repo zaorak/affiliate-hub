@@ -26,18 +26,39 @@ hit(f"{BASE}/v3/partner/my-brands")
 # 2) Participations (kræver partnerId)
 use_id = PARTNER_ID or PUBLISHER_ID
 
-params = [
-    ("page", 1),
-    ("page_size", 50),
+print("\n--- Testing participations param formats ---")
 
-    # vigtig ændring: brug "status" og "campaign_status" uden []
+# Variant 1: repeated keys WITHOUT []
+params_v1 = [
+    ("page", "1"),
+    ("page_size", "50"),
     ("status", "a"),
     ("status", "p"),
     ("status", "t"),
     ("status", "r"),
-
     ("campaign_status", "a"),
     ("campaign_status", "r"),
 ]
+hit(f"{BASE}/v3/partner/{use_id}/participations", params=params_v1)
 
-hit(f"{BASE}/v3/partner/{use_id}/participations", params=params)
+# Variant 2: comma-separated strings
+params_v2 = {
+    "page": "1",
+    "page_size": "50",
+    "status": "a,p,t,r",
+    "campaign_status": "a,r",
+}
+hit(f"{BASE}/v3/partner/{use_id}/participations", params=params_v2)
+
+# Variant 3: keep [] but as REPEATED keys (nogle gateways kræver det præcist)
+params_v3 = [
+    ("page", "1"),
+    ("page_size", "50"),
+    ("status[]", "a"),
+    ("status[]", "p"),
+    ("status[]", "t"),
+    ("status[]", "r"),
+    ("campaign_status[]", "a"),
+    ("campaign_status[]", "r"),
+]
+hit(f"{BASE}/v3/partner/{use_id}/participations", params=params_v3)
