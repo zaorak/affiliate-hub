@@ -15,7 +15,9 @@ def hit(url, params=None):
     r = requests.get(url, headers=headers, params=params or {}, timeout=60)
     print("\nGET", r.url)
     print("status:", r.status_code)
-    print((r.text or "")[:500])
+    # print mere af body (Partnerize sender ofte en fejltekst der forklarer hvorfor)
+    txt = (r.text or "").strip()
+    print("body:", txt[:2000] if txt else "(empty)")
     return r
 
 print("PARTNER_ID:", PARTNER_ID, "PUBLISHER_ID:", PUBLISHER_ID)
