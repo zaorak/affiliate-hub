@@ -1335,6 +1335,7 @@ with st.sidebar:
         "Search merchant across all countries & networks",
         value="",
         placeholder="e.g. Helly Hansen",
+        key="merchant_search",
     ).strip()
 
       # Networks
@@ -2923,14 +2924,20 @@ def _render_search_results(q: str):
             st.caption("No Partnerize matches.")
 
 
-tab_labels = ["Search"] + countries_list
+has_search = bool(search_query.strip())
+
+tab_labels = (["Search"] + countries_list) if has_search else countries_list
 tabs = st.tabs(tab_labels)
 
-with tabs[0]:
-    _render_search_results(search_query)
+tab_offset = 0
 
-for i, cc in enumerate(countries_list, start=1):
-    with tabs[i]:
+if has_search:
+    with tabs[0]:
+        _render_search_results(search_query)
+    tab_offset = 1
+
+for i, cc in enumerate(countries_list):
+    with tabs[i + tab_offset]:
         _render_country(cc)
 
 # -------------------- Alerts Log panel --------------------
