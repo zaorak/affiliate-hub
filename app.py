@@ -1,5 +1,5 @@
 # app.py
-import os, json, sqlite3, threading, smtplib, datetime as dt, requests, io, csv
+import os, json, sqlite3, threading, smtplib, datetime as dt, requests, io, csv, re
 from urllib.parse import urlencode, quote
 from email.message import EmailMessage
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -1247,9 +1247,10 @@ def get_commission_from_transactions(
 # -------------------- AWIN Feed + LinkBuilder helpers --------------------
 def build_awin_feed_url(feed_id: str) -> str:
     key = AWIN_FEED_APIKEY
-    fmt = AWIN_FEED_FORMAT or "csv"
-    lang = AWIN_FEED_LANG or "en"
-    return f"https://productdata.awin.com/datafeed/download/apikey/{key}/fid/{feed_id}/format/{fmt}/language/{lang}"
+    fmt = (AWIN_FEED_FORMAT or "xml").strip().lower()
+    lang = (AWIN_FEED_LANG or "en").strip()
+    # Awin feed download pattern (fid + format + language)
+    return f"https://datafeed.api.productserve.com/datafeed/download/apikey/{key}/fid/{feed_id}/format/{fmt}/language/{lang}"
 
 @st.cache_data(show_spinner=False, ttl=1800, max_entries=1_000)
 def load_awin_feed_rows():
@@ -1291,15 +1292,33 @@ def find_best_feed_for_adv(feed_rows: list[dict], advertiser_id: int, country_co
 
 def feed_url_from_row(row: dict) -> str:
     """
-    ALWAYS return a download URL we construct ourselves from feedId,
-    so it respects AWIN_FEED_FORMAT (xml) and AWIN_FEED_LANG.
+    Return the download URL if present; else construct from feedId.
+    If AWIN_FEED_FORMAT is xml, remove CSV-only params like delimiter.
     """
-    feed_id = (
-        row.get("Feed ID") or row.get("feed id") or row.get("FeedID")
-        or row.get("datafeed id") or row.get("fid")
-    )
+    fmt = (AWIN_FEED_FORMAT or "xml").strip().lower()
+
+    # 1) Prefer URL coming from Feed List CSV (it contains many params)
+    for k in ("Data feed download URL", "Download URL", "URL", "Url", "Datafeed URL"):
+        v = row.get(k)
+        if v:
+            url = str(v).strip()
+            if not url:
+                continue
+
+            # Replace format segment (csv/excel/xml -> fmt)
+            url = re.sub(r"/format/[^/]+/", f"/format/{fmt}/", url)
+
+            # XML downloads must NOT have CSV delimiter params
+            if fmt.startswith("xml"):
+                url = re.sub(r"/delimiter/[^/]+", "", url)
+
+            return url
+
+    # 2) Fallback: build from feed id
+    feed_id = row.get("Feed ID") or row.get("feed id") or row.get("FeedID") or row.get("datafeed id")
     if feed_id:
         return build_awin_feed_url(str(feed_id).strip())
+
     return ""
 
 @st.cache_data(show_spinner=False, ttl=3600)
