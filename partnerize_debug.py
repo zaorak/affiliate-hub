@@ -25,12 +25,19 @@ hit(f"{BASE}/v3/partner/my-brands")
 
 # 2) Participations (kræver partnerId)
 use_id = PARTNER_ID or PUBLISHER_ID
-hit(
-    f"{BASE}/v3/partner/{use_id}/participations",
-    params={
-        "page": 1,
-        "page_size": 50,
-        "status[]": ["a", "p", "t", "r"],
-        "campaign_status[]": ["a", "r"],
-    },
-)
+
+params = [
+    ("page", 1),
+    ("page_size", 50),
+
+    # vigtig ændring: brug "status" og "campaign_status" uden []
+    ("status", "a"),
+    ("status", "p"),
+    ("status", "t"),
+    ("status", "r"),
+
+    ("campaign_status", "a"),
+    ("campaign_status", "r"),
+]
+
+hit(f"{BASE}/v3/partner/{use_id}/participations", params=params)
