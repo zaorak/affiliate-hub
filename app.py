@@ -1290,16 +1290,16 @@ def find_best_feed_for_adv(feed_rows: list[dict], advertiser_id: int, country_co
     return prefer[0]
 
 def feed_url_from_row(row: dict) -> str:
-    """Return the download URL if present; else construct from feedId."""
-    for k in ("Data feed download URL", "Download URL", "URL", "Url", "Datafeed URL"):
-        v = row.get(k)
-        if v: return v
-    feed_id = row.get("Feed ID") or row.get("feed id") or row.get("FeedID") or row.get("datafeed id")
+    """
+    ALWAYS return a download URL we construct ourselves from feedId,
+    so it respects AWIN_FEED_FORMAT (xml) and AWIN_FEED_LANG.
+    """
+    feed_id = (
+        row.get("Feed ID") or row.get("feed id") or row.get("FeedID")
+        or row.get("datafeed id") or row.get("fid")
+    )
     if feed_id:
-        return (
-            f"https://productdata.awin.com/datafeed/download/apikey/{AWIN_FEED_APIKEY}"
-            f"/language/{AWIN_FEED_LANG}/format/{AWIN_FEED_FORMAT}/feedId/{feed_id}"
-        )
+        return build_awin_feed_url(str(feed_id).strip())
     return ""
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -1815,7 +1815,7 @@ def render_awin_merchants_table(
                 "Name": p.get("advertiserName") or p.get("programName") or p.get("name"),
                 "Programme Status": status_val,
                 "Relationship": rel_val,
-                "Feed CSV": feed_url,
+                "Feed XML": feed_url,
                 "Tracking deeplink": deeplink,
             })
 
@@ -1831,11 +1831,11 @@ def render_awin_merchants_table(
         if effective_only_with_feeds:
             rows = [
                 r for r in rows
-                if (str(r.get("Feed CSV") or "").strip()
+                if (str(r.get("Feed XML") or "").strip()
                     and str(r.get("Tracking deeplink") or "").strip())
             ]
         else:
-            rows = [r for r in rows if not str(r.get("Feed CSV") or "").strip()]
+            rows = [r for r in rows if not str(r.get("Feed XML") or "").strip()]
         after_cnt = len(rows)
 
         # Status emojis (decorate after filtering)
@@ -1873,7 +1873,7 @@ def render_awin_merchants_table(
                 height=520,
                 column_config={
                     "Advertiser ID": st.column_config.NumberColumn(format="%d"),
-                    "Feed CSV": st.column_config.LinkColumn("Feed CSV"),
+                    "Feed XML": st.column_config.LinkColumn("Feed XML"),
                     "Tracking deeplink": st.column_config.LinkColumn("Tracking deeplink"),
                 },
             )
