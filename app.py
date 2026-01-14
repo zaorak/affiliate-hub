@@ -1331,6 +1331,12 @@ def cached_awin_tracking_link(advertiser_id: int, clickref: str | None = None) -
 with st.sidebar:
     st.subheader("Filters")
 
+    search_query = st.text_input(
+        "Search merchant across all countries & networks",
+        value="",
+        placeholder="e.g. Helly Hansen",
+    ).strip()
+
       # Networks
     network_options = ["AWIN", "Addrevenue", "Impact", "Partnerize"]
 
@@ -2840,13 +2846,167 @@ def _render_country(cc: str):
                 only_with_feeds=show_with_feeds,
             )
 
-if len(countries_list) > 1:
-    country_tabs = st.tabs(countries_list)
-    for idx, cc in enumerate(countries_list):
-        with country_tabs[idx]:
-            _render_country(cc)
-else:
-    _render_country(countries_list[0])
+def _render_search_results(q: str):
+    ql = (q or "").strip().lower()
+    if not ql:
+        st.info("Type a merchant name in the sidebar search to see results here.")
+        return
+
+    st.subheader(f"Search results for: {q}")
+
+    # ---------- AWIN (across all selected countries) ----------
+    if "AWIN" in networks:
+        st.markdown("### AWIN")
+        awin_hits = []
+        for cc in countries_list:
+            try:
+                progs = get_programmes(cc)
+                seq = progs if isinstance(progs, list) else progs.get("programmes", [])
+                if not isinstance(seq, list):
+                    seq = []
+            except Exception:
+                continue
+
+            for p in seq:
+                name = (p.get("advertiserName") or p.get("programName") or p.get("name") or "")
+                if ql in str(name).lower():
+                    adv_id = p.get("advertiserId") or p.get("programId") or p.get("id")
+                    try:
+                        adv_id_int = int(adv_id) if adv_id is not None else 0
+                    except Exception:
+                        adv_id_int = 0
+
+                    feed_url = ""
+                    if feed_rows and adv_id_int:
+                        best = find_best_feed_for_adv(feed_rows, adv_id_int, cc)
+                        if best:
+                            feed_url = feed_url_from_row(best)
+
+                    deeplink = awin_cread_link(adv_id_int, first_clickref, None)
+                    awin_hits.append({
+                        "Country": cc,
+                        "Advertiser ID": adv_id_int,
+                        "Name": name,
+                        "Programme Status": p.get("programmeStatus") or p.get("status") or "",
+                        "Relationship": _relationship_str(p),
+                        "Feed XML": feed_url,
+                        "Tracking deeplink": deeplink,
+                    })
+
+        if awin_hits:
+            st.dataframe(
+                awin_hits,
+                use_container_width=True,
+                height=420,
+                column_config={
+                    "Feed XML": st.column_config.LinkColumn("Feed XML"),
+                    "Tracking deeplink": st.column_config.LinkColumn("Tracking deeplink"),
+                },
+            )
+        else:
+            st.caption("No AWIN matches.")
+
+    # ---------- Addrevenue ----------
+    if "Addrevenue" in networks:
+        st.markdown("### Addrevenue")
+        addrev_hits = []
+        for cc in countries_list:
+            rows, _ = addrev_list_advertisers(cc)
+            for r in rows:
+                name = str(r.get("Name") or "")
+                if ql in name.lower():
+                    addrev_hits.append({**r, "Country": cc})
+        if addrev_hits:
+            st.dataframe(addrev_hits, use_container_width=True, height=420)
+        else:
+            st.caption("No Addrevenue matches.")
+
+    # ---------- Impact ----------
+    if "Impact" in networks:
+        st.markdown("### Impact")
+        try:
+            programs = impact_simple_programs()
+            feeds_by_campaign = impact_simple_catalog_feeds()
+        except Exception:
+            programs = []
+            feeds_by_campaign = {}
+
+        impact_hits = []
+        for p in programs or []:
+            name = (p.get("CampaignName") or p.get("AdvertiserName") or "(unknown)")
+            if ql in str(name).lower():
+                camp_id = str(p.get("CampaignId") or "").strip()
+                feed_urls = feeds_by_campaign.get(camp_id) or []
+                impact_hits.append({
+                    "Advertiser ID": p.get("AdvertiserId") or "",
+                    "Campaign ID": camp_id,
+                    "Name": name,
+                    "Programme Status": p.get("ContractStatus") or "",
+                    "Feed": (feed_urls[0] if feed_urls else ""),
+                    "Tracking deeplink": p.get("TrackingLink") or "",
+                })
+
+        if impact_hits:
+            st.dataframe(
+                impact_hits,
+                use_container_width=True,
+                height=420,
+                column_config={
+                    "Feed": st.column_config.LinkColumn("Feed"),
+                    "Tracking deeplink": st.column_config.LinkColumn("Tracking deeplink"),
+                },
+            )
+        else:
+            st.caption("No Impact matches.")
+
+    # ---------- Partnerize ----------
+    if "Partnerize" in networks:
+        st.markdown("### Partnerize")
+        try:
+            programs = partnerize_participations()
+            feeds_by_campaign = partnerize_feeds_by_campaign()
+        except Exception:
+            programs = []
+            feeds_by_campaign = {}
+
+        pz_hits = []
+        for p in programs or []:
+            info = p.get("campaign_info") or {}
+            title = info.get("title") or info.get("name") or "(unknown)"
+            if ql in str(title).lower():
+                cid = str(p.get("campaign_id") or "").strip()
+                feed_urls = feeds_by_campaign.get(cid) or []
+                pz_hits.append({
+                    "Campaign ID": cid,
+                    "Name": title,
+                    "Programme Status": p.get("status") or "",
+                    "Feed": (feed_urls[0] if feed_urls else ""),
+                    "Tracking deeplink": info.get("tracking_link") or "",
+                })
+
+        if pz_hits:
+            st.dataframe(
+                pz_hits,
+                use_container_width=True,
+                height=420,
+                column_config={
+                    "Feed": st.column_config.LinkColumn("Feed"),
+                    "Tracking deeplink": st.column_config.LinkColumn("Tracking deeplink"),
+                },
+            )
+        else:
+            st.caption("No Partnerize matches.")
+
+
+tab_labels = ["Search"] + countries_list
+tabs = st.tabs(tab_labels)
+
+with tabs[0]:
+    _render_search_results(search_query)
+
+for i, cc in enumerate(countries_list, start=1):
+    with tabs[i]:
+        _render_country(cc)
 
 # -------------------- Alerts Log panel --------------------
 st.subheader("Alerts log (last 100)")
