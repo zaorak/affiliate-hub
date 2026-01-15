@@ -2772,12 +2772,11 @@ def _render_country(cc: str):
 
             for p in seq:
                 name = (p.get("advertiserName") or p.get("programName") or p.get("name") or "")
-                if ql in str(name).lower():
-                    adv_id = p.get("advertiserId") or p.get("programId") or p.get("id")
-                    try:
-                        adv_id_int = int(adv_id) if adv_id is not None else 0
-                    except Exception:
-                        adv_id_int = 0
+                adv_id = p.get("advertiserId") or p.get("programId") or p.get("id")
+                try:
+                    adv_id_int = int(adv_id) if adv_id is not None else 0
+                except Exception:
+                    adv_id_int = 0
 
                     feed_url = ""
                     if feed_map and adv_id_int:
