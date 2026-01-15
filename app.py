@@ -1727,7 +1727,7 @@ def _relationship_str(p: dict) -> str:
 # -------------------- Merchants tables --------------------
 def render_awin_merchants_table(
     country_code: str,
-    feed_rows: list[dict],
+    feed_map: list[dict],
     first_clickref: str | None,
     only_with_feeds: bool = True,   # sidebar flag
 ):
@@ -2725,7 +2725,7 @@ def _render_country(cc: str):
                 if net == "AWIN":
                     render_awin_merchants_table(
                         cc,
-                        feed_rows,
+                        feed_map,
                         first_clickref,
                         only_with_feeds=show_with_feeds,   # AWIN bruger stadig feed-filteret
                     )
@@ -2743,7 +2743,7 @@ def _render_country(cc: str):
         if "AWIN" in networks:
             render_awin_merchants_table(
                 cc,
-                feed_rows,
+                feed_map,
                 first_clickref,
                 only_with_feeds=show_with_feeds,
             )
