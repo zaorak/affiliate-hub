@@ -2905,6 +2905,8 @@ if len(countries_list) > 1:
     for idx, cc in enumerate(countries_list):
         with country_tabs[idx]:
             _render_country(cc)
+else:
+    _render_country(countries_list[0])
 
 # -------------------- Alerts Log panel --------------------
 st.caption(
