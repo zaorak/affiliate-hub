@@ -2322,6 +2322,14 @@ def render_partnerize_merchants_table(country_code: str, only_with_feeds: bool =
         )
         feeds_by_campaign = {}
 
+        # Auto-disable feed-filter hvis feeds ikke kan hentes / er tomt
+    effective_only_with_feeds = only_with_feeds and bool(feeds_by_campaign)
+
+    if only_with_feeds and not feeds_by_campaign:
+        st.caption(
+            "Partnerize feeds kunne ikke hentes eller er tomt – feed-filter er slået fra for denne visning."
+        )
+
     if not programs:
         st.info("Partnerize API returned no participations for this account.")
         return
@@ -2395,7 +2403,7 @@ def render_partnerize_merchants_table(country_code: str, only_with_feeds: bool =
 
     # Evt. feed-filter som i AWIN
     before_cnt = len(rows)
-    if only_with_feeds:
+    if effective_only_with_feeds:
         rows = [
             r for r in rows
             if str(r.get("Feed CSV") or "").strip()
@@ -2424,7 +2432,7 @@ def render_partnerize_merchants_table(country_code: str, only_with_feeds: bool =
     st.subheader(f"Merchants in {country_code} • Partnerize")
 
     caption = (
-        f"Feed filter: {'WITH feeds' if only_with_feeds else 'ALL campaigns'} • "
+        f"Feed filter: {'WITH feeds' if effective_only_with_feeds else 'ALL campaigns'} • "
         f"showing {after_cnt} of {before_cnt} joined campaigns. "
         "This list comes from Partnerize's participations API and includes only "
         "campaigns your publisher account has joined/has a relationship with, "
