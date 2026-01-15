@@ -57,8 +57,8 @@ if is_warmup:
 
     # AWIN feeds list (hvis du har cached wrapper)
     try:
-        # hvis du bruger cached_awin_feed_rows()
-        cached_awin_feed_rows()
+        # hvis du bruger cached_awin_feed_map()
+        cached_awin_feed_map()
     except Exception:
         pass
 
@@ -1767,8 +1767,8 @@ def render_awin_merchants_table(
             })
 
         # If feed list not available, auto-disable the feed filter so the table is never empty
-        effective_only_with_feeds = only_with_feeds and bool(feed_rows)
-        if only_with_feeds and not feed_rows:
+        effective_only_with_feeds = only_with_feeds and bool(feed_map)
+        if only_with_feeds and not feed_map:
             st.caption("Feed list unavailable or empty – feed filter disabled for this view.")
 
         # --- Feed presence filter ---
@@ -2782,8 +2782,8 @@ def _render_country(cc: str):
                         adv_id_int = 0
 
                     feed_url = ""
-                    if feed_rows and adv_id_int:
-                        best = find_best_feed_for_adv(feed_rows, adv_id_int, cc)
+                    if feed_map and adv_id_int:
+                        best = find_best_feed_for_adv(feed_map, adv_id_int, cc)
                         if best:
                             feed_url = feed_url_from_row(best)
 
