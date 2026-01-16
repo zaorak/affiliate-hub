@@ -2226,70 +2226,62 @@ def partnerize_feeds_by_campaign() -> dict[str, list[str]]:
     feeds_by_camp: dict[str, list[str]] = {}
     page = 1
 
-    while True:
+     while True:
         params = {
             "page": page,
-            "page_size": 50,   # ikke for stor side -> mindre payload
+            "page_size": 50,
+            "active": "y",
         }
 
-        try:
-            data = partnerize_get(
-                f"/user/publisher/{PARTNERIZE_PUBLISHER_ID}/feed",
-                params=params,
-            ) or {}
-        except Exception as e:
-            # Vi vil ikke crashe hele dashboardet, bare vise en advarsel
-            st.warning(
-                f"Partnerize feed API failed ({e}); Campaigns are shown without Feed CSV for now."
-            )
-            return {}
+        data = partnerize_get(
+            f"/user/publisher/{PARTNERIZE_PUBLISHER_ID}/feed",
+            params=params,
+        ) or {}
 
-        # jf. docs: top-level "campaigns" -> hver har "campaign" med "feeds"
         campaigns = data.get("campaigns") or []
         if isinstance(campaigns, dict):
             campaigns = [campaigns]
 
         if not campaigns:
-            break  # ingen flere sider
+            break
 
         for item in campaigns:
             camp = item.get("campaign") or item
 
-    cid = str(camp.get("campaign_id") or camp.get("id") or "").strip()
-    if not cid:
-        continue
+            cid = str(camp.get("campaign_id") or camp.get("id") or "").strip()
+            if not cid:
+                continue
 
-    feeds = camp.get("feeds") or camp.get("datafeeds") or []
-    if isinstance(feeds, dict):
-        feeds = [feeds]
+            feeds = camp.get("feeds") or camp.get("datafeeds") or []
+            if isinstance(feeds, dict):
+                feeds = [feeds]
 
-    for f in feeds:
-        if not isinstance(f, dict):
-            continue
+            for f in feeds:
+                if not isinstance(f, dict):
+                    continue
 
-        url_candidates = [
-            f.get("location"),
-            f.get("location_compressed"),
-            f.get("feed_url"),
-            f.get("download_url"),
-            f.get("url"),
-        ]
-        url = next((u for u in url_candidates if isinstance(u, str) and u.strip()), "")
-        if not url:
-            continue
+                url_candidates = [
+                    f.get("location"),
+                    f.get("location_compressed"),
+                    f.get("feed_url"),
+                    f.get("download_url"),
+                    f.get("url"),
+                ]
+                url = next((u for u in url_candidates if isinstance(u, str) and u.strip()), "")
+                if not url:
+                    continue
 
-        feeds_by_camp.setdefault(cid, [])
-        if url not in feeds_by_camp[cid]:
-            feeds_by_camp[cid].append(url)
+                feeds_by_camp.setdefault(cid, [])
+                if url not in feeds_by_camp[cid]:
+                    feeds_by_camp[cid].append(url)
 
-        # simple pagination: hvis vi fik færre end page_size, er vi færdige
         if len(campaigns) < params["page_size"]:
             break
 
         page += 1
-        if page > 100:  # safety, så vi ikke loop'er uendeligt
+        if page > 20:
             break
-
+            
     return feeds_by_camp
 
 
