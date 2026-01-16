@@ -2230,7 +2230,6 @@ def partnerize_feeds_by_campaign() -> dict[str, list[str]]:
         params = {
             "page": page,
             "page_size": 50,   # ikke for stor side -> mindre payload
-            "active": "y",     # kun aktive feeds
         }
 
         try:
@@ -2254,43 +2253,41 @@ def partnerize_feeds_by_campaign() -> dict[str, list[str]]:
             break  # ingen flere sider
 
         for item in campaigns:
-            # typisk struktur: { "campaign": { ... } }
-            camp = item.get("campaign") or item
+    camp = item.get("campaign") or item
 
-            cid = str(
-                camp.get("campaign_id")
-                or camp.get("id")
-                or ""
-            ).strip()
-            if not cid:
-                continue
+    cid = str(camp.get("campaign_id") or camp.get("id") or "").strip()
+    if not cid:
+        continue
 
-            feeds = camp.get("feeds") or []
-            if isinstance(feeds, dict):
-                feeds = [feeds]
+    feeds = camp.get("feeds") or camp.get("datafeeds") or []
+    if isinstance(feeds, dict):
+        feeds = [feeds]
 
-            for f in feeds:
-                # bedste bud på URL-felter jf. docs
-                loc = (
-                    f.get("location")
-                    or f.get("location_compressed")
-                    or f.get("feed_url")
-                    or f.get("url")
-                )
-                if not isinstance(loc, str) or not loc.strip():
-                    continue
+    for f in feeds:
+        if not isinstance(f, dict):
+            continue
 
-                url = loc.strip()
-                feeds_by_camp.setdefault(cid, [])
-                if url not in feeds_by_camp[cid]:
-                    feeds_by_camp[cid].append(url)
+        url_candidates = [
+            f.get("location"),
+            f.get("location_compressed"),
+            f.get("feed_url"),
+            f.get("download_url"),
+            f.get("url"),
+        ]
+        url = next((u for u in url_candidates if isinstance(u, str) and u.strip()), "")
+        if not url:
+            continue
+
+        feeds_by_camp.setdefault(cid, [])
+        if url not in feeds_by_camp[cid]:
+            feeds_by_camp[cid].append(url)
 
         # simple pagination: hvis vi fik færre end page_size, er vi færdige
         if len(campaigns) < params["page_size"]:
             break
 
         page += 1
-        if page > 20:  # safety, så vi ikke loop'er uendeligt
+        if page > 100:  # safety, så vi ikke loop'er uendeligt
             break
 
     return feeds_by_camp
