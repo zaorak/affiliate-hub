@@ -2253,7 +2253,7 @@ def partnerize_feeds_by_campaign() -> dict[str, list[str]]:
             break  # ingen flere sider
 
         for item in campaigns:
-    camp = item.get("campaign") or item
+            camp = item.get("campaign") or item
 
     cid = str(camp.get("campaign_id") or camp.get("id") or "").strip()
     if not cid:
