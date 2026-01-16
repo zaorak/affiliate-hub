@@ -2226,7 +2226,7 @@ def partnerize_feeds_by_campaign() -> dict[str, list[str]]:
     feeds_by_camp: dict[str, list[str]] = {}
     page = 1
 
-     while True:
+    while True:
         params = {
             "page": page,
             "page_size": 50,
