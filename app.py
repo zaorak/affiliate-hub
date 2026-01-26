@@ -656,66 +656,81 @@ def tp_programs() -> list[dict]:
 
 
 @st.cache_data(show_spinner=False, ttl=1800)
-def tp_feeds_by_program() -> dict[str, list[str]]:
+def twop_programs() -> list[dict]:
     """
-    Henter 2Performant produkt-feeds og bygger map:
-      { program_id(str): [feed_url, ...] }
+    Henter dine programmer fra 2Performant.
+    GET /affiliate/programs.json
     """
-    if not _tp_configured():
-        return {}
-
-    feeds_by_prog: dict[str, list[str]] = {}
     page = 1
+    rows: list[dict] = []
 
     while True:
-        params = {"page": page, "per_page": 100}
-        try:
-            data = tp_get(TP_FEEDS_PATH, params=params) or {}
-        except Exception as e:
-            st.warning(
-                f"2Performant feeds API failed ({e}); "
-                "2Performant programs will be shown without Feed CSV."
-            )
-            return {}
+        data = twop_get("/affiliate/programs.json", params={"page": page}) or {}
+        batch = data.get("programs") or data.get("data") or data.get("items") or []
+        if isinstance(batch, dict):
+            batch = [batch]
 
-        if isinstance(data, list):
-            rows = data
-        else:
-            rows = data.get("feeds") or data.get("data") or []
-            if isinstance(rows, dict):
-                rows = [rows]
-
-        if not rows:
+        if not batch:
             break
 
-        for f in rows:
+        rows.extend(batch)
+
+        # simpelt pagination-stop: hvis vi fik få rækker, er vi nok færdige
+        if len(batch) < 50:
+            break
+        page += 1
+        if page > 20:
+            break  # safety
+
+    return rows
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def twop_feeds_by_program() -> dict[str, list[str]]:
+    """
+    Henter product feeds og laver:
+      { program_id (str): [feed_url, ...] }
+
+    GET /affiliate/product-feeds.json
+    """
+    page = 1
+    feeds_by_prog: dict[str, list[str]] = {}
+
+    while True:
+        data = twop_get("/affiliate/product-feeds.json", params={"page": page}) or {}
+        batch = data.get("product_feeds") or data.get("feeds") or data.get("data") or []
+        if isinstance(batch, dict):
+            batch = [batch]
+
+        if not batch:
+            break
+
+        for f in batch:
             prog_id = str(
                 f.get("program_id")
+                or f.get("programId")
                 or f.get("campaign_id")
-                or f.get("advertiser_id")
-                or f.get("id")
+                or f.get("campaignId")
                 or ""
             ).strip()
             if not prog_id:
                 continue
 
-            url_candidates = [
-                f.get("url"),
-                f.get("feed_url"),
-                f.get("csv_url"),
-                f.get("download_url"),
-            ]
-            urls = [u for u in url_candidates if isinstance(u, str) and u.strip()]
-            if not urls:
+            url = (
+                f.get("url")
+                or f.get("feed_url")
+                or f.get("download_url")
+                or f.get("downloadUrl")
+            )
+            if not isinstance(url, str) or not url.strip():
                 continue
 
+            url = url.strip()
             feeds_by_prog.setdefault(prog_id, [])
-            for u in urls:
-                u = u.strip()
-                if u not in feeds_by_prog[prog_id]:
-                    feeds_by_prog[prog_id].append(u)
+            if url not in feeds_by_prog[prog_id]:
+                feeds_by_prog[prog_id].append(url)
 
-        if len(rows) < 100:
+        if len(batch) < 50:
             break
         page += 1
         if page > 20:
@@ -2614,8 +2629,8 @@ def tp_programs() -> list[dict]:
         return []
 
     try:
-        # TODO: tilpas sti efter docs (fx "/api/affiliate/programs" eller lign.)
-        data = tp_get("/api/affiliate/programs", params={"page": 1})
+        # TODO: tilpas sti efter docs (fx "/api/affiliate/json" eller lign.)
+        data = tp_get("/api/affiliate/json", params={"page": 1})
     except Exception as e:
         st.warning(f"2Performant programs API failed: {e}")
         return []
@@ -2647,8 +2662,8 @@ def tp_feeds_by_program() -> dict[str, list[str]]:
     feeds_by_prog: dict[str, list[str]] = {}
 
     try:
-        # TODO: tilpas sti efter docs (fx "/api/affiliate/product-feeds" eller lign.)
-        data = tp_get("/api/affiliate/product-feeds", params={"page": 1})
+        # TODO: tilpas sti efter docs (fx "/api/affiliate/product-feeds.json" eller lign.)
+        data = tp_get("/api/affiliate/product-feeds.json", params={"page": 1})
     except Exception as e:
         st.warning(f"2Performant feeds API failed: {e}")
         return {}
