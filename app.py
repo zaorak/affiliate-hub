@@ -584,17 +584,16 @@ TPF_USER_KEY = (
     or ""
 ).strip()
 
+def _tpf_configured() -> bool:
+    """True hvis 2Performant er sat op."""
+    return bool(TPF_USER_KEY and TPF_API_TOKEN)
+
 TPF_API_TOKEN = (
     os.getenv("TPF_API_TOKEN")         # ny-style
     or os.getenv("TP_API_TOKEN")       # evt. gammel-style
     or os.getenv("TP_USER_API_KEY")    # hvis docs har kaldt den sådan
     or ""
 ).strip()
-
-def _tpf_configured() -> bool:
-    """True hvis 2Performant er sat op."""
-    return bool(TPF_USER_KEY and TPF_API_TOKEN)
-
 
 def _tpf_headers() -> dict:
     """
