@@ -570,65 +570,336 @@ def partnerize_get(path: str, params: dict | None = None) -> dict:
     return data if isinstance(data, dict) else {}
 
 # -------------------- 2Performant config + helpers --------------------
-TP_BASE = (
-    os.getenv("TP_BASE")               # din env-var til base URL
+# Basis-URL til 2Performant API
+TPF_BASE = (
+    os.getenv("TPF_BASE_URL")          # ny-style navn
+    or os.getenv("TP_BASE")            # gammel-style navn
     or "https://api.2performant.com"
 ).rstrip("/")
 
-TP_USER_KEY = (os.getenv("TP_USER_KEY") or "").strip()
+# Credentials – vi accepterer både nye og gamle env-navne
+TPF_USER_KEY = (
+    os.getenv("TPF_USER_KEY")          # ny-style
+    or os.getenv("TP_USER_KEY")        # legacy navn
+    or ""
+).strip()
+
+TPF_API_TOKEN = (
+    os.getenv("TPF_API_TOKEN")         # ny-style
+    or os.getenv("TP_API_TOKEN")       # legacy navn
+    or os.getenv("TP_USER_API_KEY")    # hvis docs har kaldt den sådan
+    or ""
+).strip()
 
 
 def _tp_configured() -> bool:
     """
-    True hvis 2Performant er sat op (har en TP_USER_KEY).
+    True hvis der er sat en 2Performant user key (og evt. token).
+    Vi accepterer både TPF_USER_KEY og TP_USER_KEY i env.
     """
-    return bool(TP_USER_KEY)
+    return bool(TPF_USER_KEY)
 
 
-def _tp_headers() -> dict:
+def _tpf_headers() -> dict:
     """
     Standard headers til 2Performant.
-    2Performant bruger en 'User Key' header – vi sender den som X-User-Key.
-    Hvis deres docs kræver et andet header-navn, er det KUN denne funktion,
-    du skal ændre.
+    Hvis du har både user key og token, bruger vi Basic Auth.
+    Hvis du kun har user key, sender vi den som 'User-Key' header.
     """
-    headers = {
-        "Accept": "application/json",
-    }
-    if TP_USER_KEY:
-        headers["X-User-Key"] = TP_USER_KEY
+    headers = {"Accept": "application/json"}
+
+    if not _tp_configured():
+        return headers
+
+    if TPF_API_TOKEN:
+        # Basic auth: Authorization: Basic base64(user:token)
+        token = base64.b64encode(
+            f"{TPF_USER_KEY}:{TPF_API_TOKEN}".encode("utf-8")
+        ).decode("ascii")
+        headers["Authorization"] = f"Basic {token}"
+    else:
+        # fallback – mange eksempler bruger kun en User-Key header
+        headers["User-Key"] = TPF_USER_KEY
+
     return headers
 
 
-def tp_get(path: str, params: dict | None = None) -> dict:
+def tpf_get(path: str, params: dict | None = None) -> dict:
     """
     Generel GET-wrapper til 2Performant.
-
-    - Bruger TP_BASE + path
-    - Returnerer {} ved 404, så dashboardet ikke crasher
+    Vi kalder KUN rigtige paths, fx:
+      /api/affiliate/programs.json
+      /api/affiliate/product-feeds.json
     """
     if not _tp_configured():
         return {}
 
+    # Sørg for leading slash
     if not path.startswith("/"):
         path = "/" + path
 
-    url = f"{TP_BASE}{path}"
+    url = f"{TPF_BASE}{path}"
 
     r = requests.get(
         url,
         params=params or {},
-        headers=_tp_headers(),
+        headers=_tpf_headers(),
         timeout=60,
     )
 
-    # Hvis endpointet ikke findes, vil vi ikke knække hele app'en
+    # Hvis endpointet ikke findes, vil vi ikke crashe hele dashboardet.
     if r.status_code == 404:
         return {}
 
     r.raise_for_status()
     data = r.json() or {}
     return data if isinstance(data, dict) else {}
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def tpf_list_programs() -> list[dict]:
+    """
+    Hent affiliate-programmer fra 2Performant via:
+      GET /api/affiliate/programs.json?page=N
+
+    Vi forsøger at være defensive mht. JSON-struktur.
+    """
+    if not _tp_configured():
+        return []
+
+    all_rows: list[dict] = []
+    page = 1
+
+    while True:
+        data = tpf_get("/api/affiliate/programs.json", params={"page": page}) or {}
+
+        if isinstance(data, list):
+            rows = data
+        elif isinstance(data, dict):
+            rows = data.get("programs") or data.get("data") or data.get("items") or []
+        else:
+            rows = []
+
+        if isinstance(rows, dict):
+            rows = [rows]
+
+        if not rows:
+            break
+
+        all_rows.extend(rows)
+
+        page += 1
+        if page > 20:  # safety
+            break
+
+    return all_rows
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def tpf_feeds_by_program() -> dict[str, list[str]]:
+    """
+    Hent produktfeeds fra 2Performant via:
+      GET /api/affiliate/product-feeds.json?page=N
+
+    Returnerer map:
+      { program_id (str): [feed_url, ...] }
+    """
+    if not _tp_configured():
+        return {}
+
+    feeds_by_prog: dict[str, list[str]] = {}
+    page = 1
+
+    while True:
+        data = tpf_get("/api/affiliate/product-feeds.json", params={"page": page}) or {}
+
+        # Vi prøver flere mulige felter
+        if isinstance(data, list):
+            rows = data
+        elif isinstance(data, dict):
+            rows = (
+                data.get("product_feeds")
+                or data.get("feeds")
+                or data.get("data")
+                or data.get("items")
+                or []
+            )
+        else:
+            rows = []
+
+        if isinstance(rows, dict):
+            rows = [rows]
+
+        if not rows:
+            break
+
+        for f in rows:
+            inner = f.get("product_feed") or f
+
+            prog_id = str(
+                inner.get("program_id")
+                or inner.get("programId")
+                or inner.get("campaign_id")
+                or inner.get("campaignId")
+                or inner.get("id")
+                or ""
+            ).strip()
+
+            if not prog_id:
+                continue
+
+            url_candidates = [
+                inner.get("url"),
+                inner.get("file_url"),
+                inner.get("feed_url"),
+                inner.get("download_url"),
+                inner.get("downloadUrl"),
+            ]
+            urls = [
+                u for u in url_candidates
+                if isinstance(u, str) and u.strip()
+            ]
+            if not urls:
+                continue
+
+            feeds_by_prog.setdefault(prog_id, [])
+            for u in urls:
+                u = u.strip()
+                if u not in feeds_by_prog[prog_id]:
+                    feeds_by_prog[prog_id].append(u)
+
+        page += 1
+        if page > 20:
+            break
+
+    return feeds_by_prog
+
+
+def render_2performant_merchants_table(country_code: str):
+    """
+    Viser 2Performant-programmer med:
+      - Program ID
+      - Navn
+      - (Status/relationship – best effort)
+      - Feed CSV (hvis product-feeds API virker)
+      - Tracking deeplink (best effort)
+    """
+    if not _tp_configured():
+        st.info(
+            "2Performant is not configured – set TPF_USER_KEY (eller legacy TP_USER_KEY) "
+            "og evt. TPF_API_TOKEN / TP_API_TOKEN i Railway env."
+        )
+        return
+
+    # Programmer
+    try:
+        programs = tpf_list_programs()
+    except Exception as e:
+        st.warning(f"2Performant programs API failed: {e}")
+        return
+
+    # Feeds (må gerne fejle uden at knække alt)
+    try:
+        feeds_by_prog = tpf_feeds_by_program()
+    except Exception as e:
+        st.warning(f"2Performant feeds API failed: {e}")
+        feeds_by_prog = {}
+
+    if not programs:
+        st.info("2Performant API returned no programmes for this account.")
+        return
+
+    cc = (country_code or "").strip().upper()
+    rows = []
+
+    for p in programs:
+        inner = p.get("program") or p
+
+        pid = str(inner.get("id") or inner.get("program_id") or "").strip()
+        if not pid:
+            continue
+
+        # Evt. filtrering på land, hvis 2Performant returnerer noget geo-felt
+        geo_raw = (
+            inner.get("country") or inner.get("countries")
+            or inner.get("region") or inner.get("regions")
+        )
+        if cc and geo_raw:
+            if isinstance(geo_raw, str):
+                codes = {geo_raw.strip().upper()}
+            elif isinstance(geo_raw, list):
+                codes = {str(g).strip().upper() for g in geo_raw}
+            else:
+                codes = {str(geo_raw).strip().upper()}
+            if cc not in codes:
+                continue
+
+        name = (
+            inner.get("name")
+            or inner.get("program_name")
+            or inner.get("advertiser_name")
+            or inner.get("advertiser")
+            or "(unknown)"
+        )
+
+        status = (
+            inner.get("status")
+            or inner.get("state")
+            or ""
+        )
+        rel = (
+            inner.get("relationship")
+            or inner.get("relation")
+            or ""
+        )
+
+        tracking = (
+            inner.get("tracking_url")
+            or inner.get("affiliate_link")
+            or inner.get("affiliate_url")
+            or inner.get("url")
+            or ""
+        )
+
+        feed_urls = feeds_by_prog.get(pid) or []
+        feed_url = feed_urls[0] if feed_urls else ""
+
+        rows.append(
+            {
+                "Program ID": pid,
+                "Name": name,
+                "Programme Status": status,
+                "Relationship": rel,
+                "Feed CSV": feed_url,
+                "Tracking deeplink": tracking,
+            }
+        )
+
+    if not rows:
+        st.info(f"No 2Performant programmes matched the filter for {cc or 'ALL'}.")
+        return
+
+    st.subheader(f"Merchants in {country_code} • 2Performant")
+    st.caption(
+        "Program list and feeds are fetched from 2Performant's affiliate API. "
+        "Only programmes your affiliate account has access to will appear here. "
+        "If Feed CSV is empty, either the product-feeds endpoint is not enabled "
+        "for your account or there are no feeds for that programme."
+    )
+
+    try:
+        st.dataframe(
+            rows,
+            use_container_width=True,
+            height=520,
+            column_config={
+                "Program ID": st.column_config.TextColumn(),
+                "Feed CSV": st.column_config.LinkColumn("Feed CSV"),
+                "Tracking deeplink": st.column_config.LinkColumn("Tracking deeplink"),
+            },
+        )
+    except Exception:
+        st.dataframe(rows, use_container_width=True, height=520)
 
 # -------- Impact: Campaigns (programmer) + Catalog feeds --------
 def impact_list_programs() -> list[dict]:
