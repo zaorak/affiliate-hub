@@ -655,6 +655,13 @@ def tpf_get(path: str, params: dict | None = None) -> dict:
     data = r.json() or {}
     return data if isinstance(data, dict) else {}
 
+# --- Backwards compatibility: gamle helpers der kalder `tp_get` ---
+def tp_get(path: str, params: dict | None = None) -> dict:
+    """
+    Alias til tpf_get, så ældre kode der kalder tp_get fortsat virker.
+    """
+    return tpf_get(path, params or {})
+
 
 @st.cache_data(show_spinner=False, ttl=1800)
 def tpf_list_programs() -> list[dict]:
