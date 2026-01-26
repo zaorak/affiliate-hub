@@ -5,6 +5,8 @@ from email.message import EmailMessage
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 import streamlit as st
+import time
+import urllib.parse
 
 # ✅ MUST be first Streamlit call
 st.set_page_config(
@@ -569,329 +571,422 @@ def partnerize_get(path: str, params: dict | None = None) -> dict:
     data = r.json() or {}
     return data if isinstance(data, dict) else {}
 
-# -------------------- 2Performant config + helpers --------------------
-# Basis-URL til 2Performant API
-TPF_BASE = (
-    os.getenv("TPF_BASE_URL")          # ny-style navn
-    or os.getenv("TP_BASE")            # gammel-style navn
-    or "https://api.2performant.com"
-).rstrip("/")
+# ----- 2Performant (affiliate) – login + programs + tracking links -----
 
-# Credentials – vi accepterer både nye og gamle env-navne
-TPF_USER_KEY = (
-    os.getenv("TPF_USER_KEY")          # ny-style
-    or os.getenv("TP_USER_KEY")        # legacy navn
-    or ""
-).strip()
-
-TPF_API_TOKEN = (
-    os.getenv("TPF_API_TOKEN")         # ny-style
-    or os.getenv("TP_API_TOKEN")       # legacy navn
-    or os.getenv("TP_USER_API_KEY")    # hvis docs har kaldt den sådan
-    or ""
-).strip()
+TP_BASE = (os.getenv("TP_BASE") or "https://api.2performant.com").rstrip("/")
+TP_USER_KEY = (os.getenv("TP_USER_KEY") or "").strip()
+TP_EMAIL = (os.getenv("TP_EMAIL") or "").strip()
+TP_PASSWORD = (os.getenv("TP_PASSWORD") or "").strip()
 
 
 def _tp_configured() -> bool:
-    """
-    True hvis der er sat en 2Performant user key (og evt. token).
-    Vi accepterer både TPF_USER_KEY og TP_USER_KEY i env.
-    """
-    return bool(TPF_USER_KEY)
+    """Er 2Performant sat op med env-var?"""
+    return bool(TP_BASE and TP_USER_KEY and TP_EMAIL and TP_PASSWORD)
 
 
-def _tpf_headers() -> dict:
+def _tp_get_cached_tokens() -> dict | None:
     """
-    Standard headers til 2Performant.
-    Hvis du har både user key og token, bruger vi Basic Auth.
-    Hvis du kun har user key, sender vi den som 'User-Key' header.
+    Hent tokens fra session_state hvis de findes og ikke er udløbet.
     """
-    headers = {"Accept": "application/json"}
+    tokens = st.session_state.get("_tp_tokens")
+    if not tokens:
+        return None
 
+    expiry = tokens.get("expiry")
+    if isinstance(expiry, (int, float)):
+        # lidt buffer (60 sek) for ikke at ramme udløb midt i et kald
+        if expiry > time.time() + 60:
+            return tokens
+        else:
+            return None
+    return tokens
+
+
+def _tp_sign_in() -> dict:
+    """
+    POST /users/sign_in.json
+
+    Headers:
+      Content-Type: application/json
+      user-key: <TP_USER_KEY>
+
+    Body:
+      { "user": { "email": "...", "password": "..." } }
+
+    Returnerer token-headers + affiliate unique_code.
+    """
     if not _tp_configured():
-        return headers
+        raise RuntimeError("2Performant env variables mangler (TP_BASE, TP_USER_KEY, TP_EMAIL, TP_PASSWORD).")
 
-    if TPF_API_TOKEN:
-        # Basic auth: Authorization: Basic base64(user:token)
-        token = base64.b64encode(
-            f"{TPF_USER_KEY}:{TPF_API_TOKEN}".encode("utf-8")
-        ).decode("ascii")
-        headers["Authorization"] = f"Basic {token}"
-    else:
-        # fallback – mange eksempler bruger kun en User-Key header
-        headers["User-Key"] = TPF_USER_KEY
+    url = f"{TP_BASE}/users/sign_in.json"
+    headers = {
+        "Content-Type": "application/json",
+        "user-key": TP_USER_KEY,
+    }
+    payload = {
+        "user": {
+            "email": TP_EMAIL,
+            "password": TP_PASSWORD,
+        }
+    }
 
-    return headers
+    r = requests.post(url, headers=headers, json=payload, timeout=30)
+    if r.status_code == 401:
+        raise RuntimeError("2Performant login fejlede (401 Unauthorized) – tjek TP_EMAIL/TP_PASSWORD/TP_USER_KEY.")
+    r.raise_for_status()
+
+    data = {}
+    try:
+        data = r.json() or {}
+    except Exception:
+        pass
+
+    user = data.get("user") or {}
+    user_unique_code = user.get("unique_code") or ""  # bruges til quicklinks hvis vi vil
+
+    h = r.headers
+    try:
+        expiry = int(h.get("expiry", "0"))
+    except Exception:
+        expiry = int(time.time()) + 3600
+
+    tokens = {
+        "access-token": h.get("access-token", ""),
+        "client": h.get("client", ""),
+        "uid": h.get("uid", TP_EMAIL),
+        "token-type": h.get("token-type", "Bearer"),
+        "expiry": expiry,
+        "affiliate_unique_code": user_unique_code,
+    }
+
+    st.session_state["_tp_tokens"] = tokens
+    return tokens
 
 
-def tpf_get(path: str, params: dict | None = None) -> dict:
+def _tp_auth_headers() -> dict:
     """
-    Generel GET-wrapper til 2Performant.
-    Vi kalder KUN rigtige paths, fx:
-      /api/affiliate/programs.json
-      /api/affiliate/product-feeds.json
+    Sørger for at vi har gyldige auth-headers (sign_in hvis nødvendigt).
     """
     if not _tp_configured():
         return {}
 
-    # Sørg for leading slash
+    tokens = _tp_get_cached_tokens()
+    if not tokens:
+        tokens = _tp_sign_in()
+
+    return {
+        "Content-Type": "application/json",
+        "access-token": tokens["access-token"],
+        "client": tokens["client"],
+        "uid": tokens["uid"],
+        "token-type": tokens.get("token-type", "Bearer"),
+    }
+
+
+def tp_get(path: str, params: dict | None = None) -> dict:
+    """
+    Generel GET-wrapper mod 2Performant med token-baseret auth.
+    """
+    if not _tp_configured():
+        return {}
+
     if not path.startswith("/"):
         path = "/" + path
+    url = f"{TP_BASE}{path}"
 
-    url = f"{TPF_BASE}{path}"
+    headers = _tp_auth_headers()
+    r = requests.get(url, headers=headers, params=params or {}, timeout=60)
 
-    r = requests.get(
-        url,
-        params=params or {},
-        headers=_tpf_headers(),
-        timeout=60,
-    )
+    # token udløbet? prøv én gang mere efter login
+    if r.status_code == 401:
+        st.session_state.pop("_tp_tokens", None)
+        headers = _tp_auth_headers()
+        r = requests.get(url, headers=headers, params=params or {}, timeout=60)
 
-    # Hvis endpointet ikke findes, vil vi ikke crashe hele dashboardet.
     if r.status_code == 404:
+        # ikke smadre hele UI'et pga. et forkert path
+        st.warning(f"2Performant endpoint 404: {url}")
         return {}
 
     r.raise_for_status()
-    data = r.json() or {}
+
+    try:
+        data = r.json()
+    except Exception:
+        return {}
+
     return data if isinstance(data, dict) else {}
 
-# --- Backwards compatibility: gamle helpers der kalder `tp_get` ---
-def tp_get(path: str, params: dict | None = None) -> dict:
+
+def tp_post(path: str, json_body: dict | None = None) -> dict | list:
     """
-    Alias til tpf_get, så ældre kode der kalder tp_get fortsat virker.
+    Generel POST-wrapper mod 2Performant (bruges bl.a. til google_ads_linker).
     """
-    return tpf_get(path, params or {})
+    if not _tp_configured():
+        return {}
+
+    if not path.startswith("/"):
+        path = "/" + path
+    url = f"{TP_BASE}{path}"
+
+    headers = _tp_auth_headers()
+    r = requests.post(url, headers=headers, json=json_body or {}, timeout=60)
+
+    if r.status_code == 401:
+        st.session_state.pop("_tp_tokens", None)
+        headers = _tp_auth_headers()
+        r = requests.post(url, headers=headers, json=json_body or {}, timeout=60)
+
+    if r.status_code == 404:
+        st.warning(f"2Performant endpoint 404: {url}")
+        return {}
+
+    r.raise_for_status()
+
+    try:
+        data = r.json()
+    except Exception:
+        return {}
+    return data
 
 
 @st.cache_data(show_spinner=False, ttl=1800)
-def tpf_list_programs() -> list[dict]:
+def tp_affiliate_programs() -> list[dict]:
     """
-    Hent affiliate-programmer fra 2Performant via:
-      GET /api/affiliate/programs.json?page=N
+    GET /affiliate/programs
 
-    Vi forsøger at være defensive mht. JSON-struktur.
+    Vi henter alle affiliate-programmer (som din affiliate-bruger har relation til).
     """
     if not _tp_configured():
         return []
 
-    all_rows: list[dict] = []
+    all_programs: list[dict] = []
     page = 1
 
     while True:
-        data = tpf_get("/api/affiliate/programs.json", params={"page": page}) or {}
+        data = tp_get("/affiliate/programs", params={"page": page, "perpage": 50}) or {}
+        programs = data.get("programs") or []
 
-        if isinstance(data, list):
-            rows = data
-        elif isinstance(data, dict):
-            rows = data.get("programs") or data.get("data") or data.get("items") or []
-        else:
-            rows = []
-
-        if isinstance(rows, dict):
-            rows = [rows]
-
-        if not rows:
+        if not programs:
             break
 
-        all_rows.extend(rows)
+        all_programs.extend(programs)
+
+        # pagination kan ligge enten som top-level "pagination" eller under metadata
+        pagination = data.get("pagination") or (data.get("metadata") or {}).get("pagination") or {}
+        current = pagination.get("current_page")
+        pages = pagination.get("pages")
+
+        if not current or not pages or current >= pages:
+            break
 
         page += 1
-        if page > 20:  # safety
+        if page > 40:  # safety
             break
 
-    return all_rows
+    return all_programs
 
 
 @st.cache_data(show_spinner=False, ttl=1800)
-def tpf_feeds_by_program() -> dict[str, list[str]]:
+def tp_affiliate_banner_for_program(program_id: int | str) -> dict | None:
     """
-    Hent produktfeeds fra 2Performant via:
-      GET /api/affiliate/product-feeds.json?page=N
+    Hent et enkelt banner for et program (for at få en 'link' tracking URL).
 
-    Returnerer map:
-      { program_id (str): [feed_url, ...] }
+    GET /affiliate/banners?program_id=...
     """
     if not _tp_configured():
-        return {}
+        return None
 
-    feeds_by_prog: dict[str, list[str]] = {}
-    page = 1
+    data = tp_get(
+        "/affiliate/banners",
+        params={"program_id": program_id, "page": 1, "perpage": 1},
+    ) or {}
 
-    while True:
-        data = tpf_get("/api/affiliate/product-feeds.json", params={"page": page}) or {}
+    banners = data.get("banners") or []
+    if isinstance(banners, dict):
+        banners = [banners]
+    if not banners:
+        return None
+    return banners[0]
 
-        # Vi prøver flere mulige felter
-        if isinstance(data, list):
-            rows = data
-        elif isinstance(data, dict):
-            rows = (
-                data.get("product_feeds")
-                or data.get("feeds")
-                or data.get("data")
-                or data.get("items")
-                or []
-            )
-        else:
-            rows = []
 
-        if isinstance(rows, dict):
-            rows = [rows]
+def tp_quicklink_for_url(url: str) -> str:
+    """
+    Brug [Affiliate] Google Ads Linker Tracking Settings til at generere en quicklink-lignende tracking-URL.
 
-        if not rows:
-            break
+    POST /affiliate/google_ads_linker/tracking_settings
+      body: { "tracking_info": [ { "url": "<landing-url>" } ] }
 
-        for f in rows:
-            inner = f.get("product_feed") or f
+    Svaret er en liste, hvor hvert element har:
+      "tracking_url": "https://b-event.2performant.com/events/click?ad_type=quicklink&aff_code=...&unique=...&redirect_to={lpurl}&st=..."
 
-            prog_id = str(
-                inner.get("program_id")
-                or inner.get("programId")
-                or inner.get("campaign_id")
-                or inner.get("campaignId")
-                or inner.get("id")
-                or ""
-            ).strip()
+    Vi erstatter {lpurl} med den rigtige, url-enkodede landing-URL så linket kan bruges direkte.
+    """
+    url = (url or "").strip()
+    if not url:
+        return ""
 
-            if not prog_id:
-                continue
+    try:
+        data = tp_post(
+            "/affiliate/google_ads_linker/tracking_settings",
+            json_body={"tracking_info": [{"url": url}]},
+        )
+    except Exception:
+        return ""
 
-            url_candidates = [
-                inner.get("url"),
-                inner.get("file_url"),
-                inner.get("feed_url"),
-                inner.get("download_url"),
-                inner.get("downloadUrl"),
-            ]
-            urls = [
-                u for u in url_candidates
-                if isinstance(u, str) and u.strip()
-            ]
-            if not urls:
-                continue
+    if isinstance(data, dict):
+        items = [data]
+    else:
+        items = data or []
 
-            feeds_by_prog.setdefault(prog_id, [])
-            for u in urls:
-                u = u.strip()
-                if u not in feeds_by_prog[prog_id]:
-                    feeds_by_prog[prog_id].append(u)
+    if not items:
+        return ""
 
-        page += 1
-        if page > 20:
-            break
+    first = items[0] or {}
+    tracking_url = first.get("tracking_url") or ""
+    if not tracking_url:
+        return ""
 
-    return feeds_by_prog
+    # erstat Google Ads placeholderen med en rigtig encoded URL
+    if "{lpurl}" in tracking_url:
+        encoded = urllib.parse.quote(url, safe="")
+        tracking_url = tracking_url.replace("{lpurl}", encoded)
+
+    return tracking_url
 
 
 def render_2performant_merchants_table(country_code: str):
     """
-    Viser 2Performant-programmer med:
-      - Program ID
-      - Navn
-      - (Status/relationship – best effort)
-      - Feed CSV (hvis product-feeds API virker)
-      - Tracking deeplink (best effort)
+    Viser dine 2Performant-programmer som affiliate med:
+
+      - Program ID, navn, kategori, status
+      - Land(e)
+      - Produkter + product_feeds_count
+      - Et banner tracking-link (hvis vi kan hente et banner)
+      - En "Quicklink" tracking-URL til programmets main_url
     """
     if not _tp_configured():
         st.info(
-            "2Performant is not configured – set TPF_USER_KEY (eller legacy TP_USER_KEY) "
-            "og evt. TPF_API_TOKEN / TP_API_TOKEN i Railway env."
+            "2Performant er ikke konfigureret – sæt TP_BASE, TP_USER_KEY, "
+            "TP_EMAIL og TP_PASSWORD i Railway/.env."
         )
         return
 
-    # Programmer
     try:
-        programs = tpf_list_programs()
+        programs = tp_affiliate_programs()
     except Exception as e:
-        st.warning(f"2Performant programs API failed: {e}")
+        st.warning(f"2Performant /affiliate/programs fejlede: {e}")
         return
 
-    # Feeds (må gerne fejle uden at knække alt)
-    try:
-        feeds_by_prog = tpf_feeds_by_program()
-    except Exception as e:
-        st.warning(f"2Performant feeds API failed: {e}")
-        feeds_by_prog = {}
-
     if not programs:
-        st.info("2Performant API returned no programmes for this account.")
+        st.info(
+            "2Performant API returnerede ingen programmer for denne affiliate-konto.\n\n"
+            "Tjek at du er tilmeldt nogle programmer i 2Performant UI, "
+            "og at credentials (TP_*) er korrekte."
+        )
         return
 
     cc = (country_code or "").strip().upper()
-    rows = []
+    rows: list[dict] = []
 
     for p in programs:
-        inner = p.get("program") or p
-
-        pid = str(inner.get("id") or inner.get("program_id") or "").strip()
+        # Affiliate Programs-response er 'flade' program-objekter
+        pid = p.get("id")
         if not pid:
             continue
 
-        # Evt. filtrering på land, hvis 2Performant returnerer noget geo-felt
-        geo_raw = (
-            inner.get("country") or inner.get("countries")
-            or inner.get("region") or inner.get("regions")
-        )
-        if cc and geo_raw:
-            if isinstance(geo_raw, str):
-                codes = {geo_raw.strip().upper()}
-            elif isinstance(geo_raw, list):
-                codes = {str(g).strip().upper() for g in geo_raw}
-            else:
-                codes = {str(geo_raw).strip().upper()}
-            if cc not in codes:
+        selling = p.get("selling_countries") or []
+        if isinstance(selling, dict):
+            selling = [selling]
+
+        # filtrér på country code hvis brugt
+        if cc and selling:
+            country_codes = {
+                str(c.get("code") or "").strip().upper()
+                for c in selling
+                if isinstance(c, dict)
+            }
+            if cc not in country_codes:
                 continue
 
-        name = (
-            inner.get("name")
-            or inner.get("program_name")
-            or inner.get("advertiser_name")
-            or inner.get("advertiser")
-            or "(unknown)"
+        name = p.get("name") or p.get("slug") or "(unknown)"
+        main_url = p.get("main_url") or ""
+        if not main_url and p.get("base_url"):
+            main_url = "https://" + str(p.get("base_url")).lstrip("/")
+
+        status = p.get("status") or ""
+        category_name = (p.get("category") or {}).get("name", "")
+        products_count = p.get("products_count") or 0
+        feeds_count = p.get("product_feeds_count") or 0
+        banners_count = p.get("banners_count") or 0
+        payment_type = p.get("payment_type") or ""
+
+        selling_str = ", ".join(
+            sorted(
+                {
+                    (c.get("code") or c.get("name") or "").strip()
+                    for c in selling
+                    if isinstance(c, dict)
+                }
+            )
         )
 
-        status = (
-            inner.get("status")
-            or inner.get("state")
-            or ""
-        )
-        rel = (
-            inner.get("relationship")
-            or inner.get("relation")
-            or ""
-        )
+        # Quicklink til programmets hoved-URL
+        quicklink = ""
+        if main_url:
+            try:
+                quicklink = tp_quicklink_for_url(main_url)
+            except Exception:
+                quicklink = ""
 
-        tracking = (
-            inner.get("tracking_url")
-            or inner.get("affiliate_link")
-            or inner.get("affiliate_url")
-            or inner.get("url")
-            or ""
-        )
-
-        feed_urls = feeds_by_prog.get(pid) or []
-        feed_url = feed_urls[0] if feed_urls else ""
+        # Banner tracking link (bare et eksempel-banner)
+        banner_link = ""
+        try:
+            banner = tp_affiliate_banner_for_program(pid)
+            if isinstance(banner, dict):
+                banner_link = banner.get("link") or ""
+        except Exception:
+            banner_link = ""
 
         rows.append(
             {
                 "Program ID": pid,
-                "Name": name,
-                "Programme Status": status,
-                "Relationship": rel,
-                "Feed CSV": feed_url,
-                "Tracking deeplink": tracking,
+                "Program": name,
+                "Main URL": main_url,
+                "Status": status,
+                "Category": category_name,
+                "Countries": selling_str,
+                "Products": products_count,
+                "Product feeds (count)": feeds_count,
+                "Banners (count)": banners_count,
+                "Payment type": payment_type,
+                "Banner tracking link": banner_link,
+                "Quicklink to main URL": quicklink,
             }
         )
 
     if not rows:
-        st.info(f"No 2Performant programmes matched the filter for {cc or 'ALL'}.")
+        st.info(f"Ingen 2Performant-programmer matcher filteret for {cc or 'ALLE'}.")
         return
 
-    st.subheader(f"Merchants in {country_code} • 2Performant")
+    # lidt emoji på status
+    status_emoji = {
+        "active": "🟢",
+        "inactive": "⚪",
+        "suspended": "🟠",
+        "closed": "🔴",
+    }
+    for r in rows:
+        s = str(r.get("Status") or "").strip().lower()
+        emoji = status_emoji.get(s)
+        if emoji:
+            r["Status"] = f"{emoji} {r['Status']}"
+
+    st.subheader(f"Merchants i {country_code or 'ALL'} • 2Performant (affiliate)")
     st.caption(
-        "Program list and feeds are fetched from 2Performant's affiliate API. "
-        "Only programmes your affiliate account has access to will appear here. "
-        "If Feed CSV is empty, either the product-feeds endpoint is not enabled "
-        "for your account or there are no feeds for that programme."
+        "Data hentes fra 2Performant Affiliate API: /affiliate/programs, /affiliate/banners "
+        "og /affiliate/google_ads_linker/tracking_settings.\n"
+        "Bemærk: den offentlige API-del viser kun *antal* product feeds, ikke selve CSV-feed-URL'erne."
     )
 
     try:
@@ -900,9 +995,9 @@ def render_2performant_merchants_table(country_code: str):
             use_container_width=True,
             height=520,
             column_config={
-                "Program ID": st.column_config.TextColumn(),
-                "Feed CSV": st.column_config.LinkColumn("Feed CSV"),
-                "Tracking deeplink": st.column_config.LinkColumn("Tracking deeplink"),
+                "Main URL": st.column_config.LinkColumn("Main URL"),
+                "Banner tracking link": st.column_config.LinkColumn("Banner tracking link"),
+                "Quicklink to main URL": st.column_config.LinkColumn("Quicklink to main URL"),
             },
         )
     except Exception:
