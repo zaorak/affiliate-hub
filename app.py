@@ -1124,6 +1124,39 @@ def tp_quicklink_for_url(url: str) -> str:
 
     return tracking_url
 
+# ---- 2Performant sektion i app.py ----
+
+if network == "2Performant":
+    st.header("2Performant (affiliate)")
+
+    country_code = st.text_input("Filtrér på land (fx RO, BG, ALL)", value="ALL")
+
+    # 👇 NUMMER 5: knap til at oprette/opdatere product feeds
+    if st.button("Opret / opdater product feeds for alle 2Performant-programmer"):
+        with st.spinner("Opretter/opdaterer feeds fra 2Performant..."):
+            feeds = tp_create_feeds_for_all_programs()
+        st.success(f"Færdig – du har nu {len(feeds)} affiliate-feeds (inkl. dem der allerede fandtes).")
+
+        # Vis et lille overblik over feeds (inkl XML/CSV-links hvis de findes)
+        if feeds:
+            st.subheader("Dine 2Performant product feeds")
+            st.dataframe(
+                [
+                    {
+                        "ID": f.get("id"),
+                        "Navn": f.get("name"),
+                        "Status": f.get("status"),
+                        "XML": f.get("xml_link"),
+                        "CSV": f.get("csv_link"),
+                    }
+                    for f in feeds
+                    if isinstance(f, dict)
+                ],
+                use_container_width=True,
+            )
+
+    # 👇 eksisterende tabel med merchants + tracking links
+    render_2performant_merchants_table(country_code)
 
 def render_2performant_merchants_table(country_code: str):
     """
