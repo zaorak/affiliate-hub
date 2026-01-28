@@ -686,6 +686,103 @@ def tp_feeds_for_program(program_id: int) -> list[dict]:
         feeds = [feeds]
     return feeds or []
 
+@st.cache_data(show_spinner=False, ttl=60)
+def tp_bulk_create_missing_feeds(max_creations: int = 100) -> list[dict]:
+    """
+    Gennemløb alle affiliate-programmer og opret et produktfeed i /affiliate/feeds
+    for de programmer, der:
+      - har product_feeds_count > 0
+      - men ingen eksisterende affiliate-feeds (tp_feeds_for_program == [])
+
+    max_creations: hvor mange feeds vi maks. vil oprette i ét run
+                   (for at undgå at spamme API'et helt vildt).
+
+    Returnerer en liste med info om oprettede feeds.
+    """
+    created: list[dict] = []
+
+    if not _tp_configured():
+        st.error("2Performant er ikke konfigureret (TP_* mangler).")
+        return created
+
+    try:
+        programs = tp_affiliate_programs()
+    except Exception as e:
+        st.error(f"Kunne ikke hente affiliate-programmer: {e}")
+        return created
+
+    if not programs:
+        st.info("Ingen affiliate-programmer fundet i 2Performant.")
+        return created
+
+    created_count = 0
+
+    for p in programs:
+        if created_count >= max_creations:
+            break
+
+        pid = p.get("id")
+        if not pid:
+            continue
+
+        feeds_count = p.get("product_feeds_count") or 0
+        # spring programmer uden product feeds over
+        if not feeds_count or feeds_count <= 0:
+            continue
+
+        # har vi allerede et affiliate-feed for dette program?
+        existing_feeds = tp_feeds_for_program(int(pid))
+        if existing_feeds:
+            # vi skipper dem der allerede har feed (f.eks. 10qaroma)
+            continue
+
+        # hent "product_feeds" værktøjer for programmet
+        try:
+            product_feeds, _meta = tp_list_product_feeds(program_id=int(pid), page=1)
+        except Exception:
+            continue
+
+        if not product_feeds:
+            # der er registreret product_feeds_count, men vi kan ikke hente nogen tools
+            continue
+
+        tool_ids: list[int] = []
+        for pf in product_feeds:
+            pf_id = pf.get("id")
+            if pf_id:
+                tool_ids.append(int(pf_id))
+
+        if not tool_ids:
+            continue
+
+        # navn til feed – relativt kort og genkendeligt
+        prog_name = p.get("name") or p.get("slug") or f"program_{pid}"
+        feed_name = f"{prog_name} – auto"
+
+        try:
+            feed = tp_create_feed(name=feed_name, tool_ids=tool_ids)
+        except Exception as e:
+            # vi logger bare fejlen i UI og går videre til næste program
+            st.write(f"Kunne ikke oprette feed for program {pid} ({prog_name}): {e}")
+            continue
+
+        if not isinstance(feed, dict):
+            continue
+
+        created.append(
+            {
+                "program_id": pid,
+                "program_name": prog_name,
+                "feed_id": feed.get("id"),
+                "feed_name": feed.get("name"),
+                "feed_status": feed.get("status"),
+                "xml_link": feed.get("xml_link"),
+                "csv_link": feed.get("csv_link"),
+            }
+        )
+        created_count += 1
+
+    return created
 
 def _tp_get_cached_tokens() -> dict | None:
     """
@@ -965,6 +1062,103 @@ def tp_quicklink_for_url(url: str) -> str:
 
     return tracking_url
 
+def tp_bulk_create_missing_feeds(max_creations: int = 100) -> list[dict]:
+    """
+    Gennemløb alle affiliate-programmer og opret et produktfeed i /affiliate/feeds
+    for de programmer, der:
+      - har product_feeds_count > 0
+      - men ingen eksisterende affiliate-feeds (tp_feeds_for_program == [])
+
+    max_creations: hvor mange feeds vi maks. vil oprette i ét run
+                   (for at undgå at spamme API'et helt vildt).
+
+    Returnerer en liste med info om oprettede feeds.
+    """
+    created: list[dict] = []
+
+    if not _tp_configured():
+        st.error("2Performant er ikke konfigureret (TP_* mangler).")
+        return created
+
+    try:
+        programs = tp_affiliate_programs()
+    except Exception as e:
+        st.error(f"Kunne ikke hente affiliate-programmer: {e}")
+        return created
+
+    if not programs:
+        st.info("Ingen affiliate-programmer fundet i 2Performant.")
+        return created
+
+    created_count = 0
+
+    for p in programs:
+        if created_count >= max_creations:
+            break
+
+        pid = p.get("id")
+        if not pid:
+            continue
+
+        feeds_count = p.get("product_feeds_count") or 0
+        # spring programmer uden product feeds over
+        if not feeds_count or feeds_count <= 0:
+            continue
+
+        # har vi allerede et affiliate-feed for dette program?
+        existing_feeds = tp_feeds_for_program(int(pid))
+        if existing_feeds:
+            # vi skipper dem der allerede har feed (f.eks. 10qaroma)
+            continue
+
+        # hent "product_feeds" værktøjer for programmet
+        try:
+            product_feeds, _meta = tp_list_product_feeds(program_id=int(pid), page=1)
+        except Exception:
+            continue
+
+        if not product_feeds:
+            # der er registreret product_feeds_count, men vi kan ikke hente nogen tools
+            continue
+
+        tool_ids: list[int] = []
+        for pf in product_feeds:
+            pf_id = pf.get("id")
+            if pf_id:
+                tool_ids.append(int(pf_id))
+
+        if not tool_ids:
+            continue
+
+        # navn til feed – relativt kort og genkendeligt
+        prog_name = p.get("name") or p.get("slug") or f"program_{pid}"
+        feed_name = f"{prog_name} – auto"
+
+        try:
+            feed = tp_create_feed(name=feed_name, tool_ids=tool_ids)
+        except Exception as e:
+            # vi logger bare fejlen i UI og går videre til næste program
+            st.write(f"Kunne ikke oprette feed for program {pid} ({prog_name}): {e}")
+            continue
+
+        if not isinstance(feed, dict):
+            continue
+
+        created.append(
+            {
+                "program_id": pid,
+                "program_name": prog_name,
+                "feed_id": feed.get("id"),
+                "feed_name": feed.get("name"),
+                "feed_status": feed.get("status"),
+                "xml_link": feed.get("xml_link"),
+                "csv_link": feed.get("csv_link"),
+            }
+        )
+        created_count += 1
+
+    return created
+
 
 def render_2performant_merchants_table(country_code: str):
     """
@@ -975,7 +1169,8 @@ def render_2performant_merchants_table(country_code: str):
       - Produkter + product_feeds_count
       - Et banner tracking-link (hvis vi kan hente et banner)
       - En "Quicklink" tracking-URL til programmets main_url
-      - (NYT) xml/csv feed URL pr. program, hvis der findes et affiliate-feed i /affiliate/feeds
+      - XML/CSV feed URL pr. program, hvis der findes et affiliate-feed i /affiliate/feeds
+      - (NYT) Knapp til at auto-oprette manglende produktfeeds via API'et
     """
     if not _tp_configured():
         st.info(
@@ -984,6 +1179,31 @@ def render_2performant_merchants_table(country_code: str):
         )
         return
 
+    # --- NYT: UI til at oprette manglende produktfeeds ---
+    with st.expander("Opret manglende produktfeeds i 2Performant", expanded=False):
+        st.caption(
+            "Vi scanner dine affiliate-programmer og opretter produktfeeds i /affiliate/feeds "
+            "for de programmer, der har product_feeds_count > 0, men endnu ikke har et feed "
+            "i din konto."
+        )
+        if st.button("Scan og opret manglende feeds", type="primary", key="tp_bulk_feeds_btn"):
+            with st.spinner("Opretter manglende feeds via 2Performant API..."):
+                created = tp_bulk_create_missing_feeds(max_creations=200)
+
+            if not created:
+                st.info(
+                    "Ingen nye feeds blev oprettet.\n\n"
+                    "Enten fandtes feed allerede for alle relevante programmer, "
+                    "eller også havde de ingen product_feeds at bygge på."
+                )
+            else:
+                st.success(f"Oprettede {len(created)} nye produktfeeds.")
+                try:
+                    st.dataframe(created, use_container_width=True)
+                except Exception:
+                    st.write(created)
+
+    # --- Hent programmer som før ---
     try:
         programs = tp_affiliate_programs()
     except Exception as e:
@@ -1120,7 +1340,7 @@ def render_2performant_merchants_table(country_code: str):
         "Data hentes fra 2Performant Affiliate API: /affiliate/programs, /affiliate/banners, "
         "/affiliate/google_ads_linker/tracking_settings og /affiliate/feeds.\n"
         "For hvert program med produkt-feeds forsøger vi at vise et XML- og CSV-feed "
-        "fra dine egne affiliate-feeds."
+        "fra dine egne affiliate-feeds. Du kan også auto-oprette manglende feeds i boksen ovenfor."
     )
 
     try:
