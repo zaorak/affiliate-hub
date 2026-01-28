@@ -643,7 +643,7 @@ def tp_create_feed(name: str, tool_ids: list[int], fields: list[str] | None = No
     # svar-struktur ifølge docs: { "feed": { ... } }
     return data.get("feed")
 
-
+# 3) Hent dine feeds (dem der har xml_link / csv_link)
 def tp_list_my_feeds(page: int = 1, perpage: int = 20, program_id: int | None = None):
     """
     Wrapper omkring GET /affiliate/feeds
@@ -651,22 +651,19 @@ def tp_list_my_feeds(page: int = 1, perpage: int = 20, program_id: int | None = 
     Returnerer (feeds, metadata)
     """
     params = {"page": page, "perpage": perpage}
-    # Nogle versioner af API'et understøtter filter[program_id] – gør det "best effort".
     if program_id is not None:
         params["filter[program_id]"] = str(program_id)
 
     data = tp_get("/affiliate/feeds", params=params)
-    feeds = data.get("feeds") or data.get("data") or []
-    metadata = data.get("metadata") or {}
-    return feeds, metadata
+    return data.get("feeds", []), data.get("metadata", {})
 
 
 @st.cache_data(show_spinner=False, ttl=1800)
-def tp_get_all_my_feeds(perpage: int = 50) -> list[dict]:
+def tp_all_my_feeds() -> list[dict]:
     """
-    Hent ALLE affiliate-feeds (de der har xml_link / csv_link).
+    Hent ALLE dine affiliate-feeds fra /affiliate/feeds (paginering).
 
-    Bruger pagination på /affiliate/feeds.
+    Bruges til at matche feed-URLs (xml_link/csv_link) til hvert program.
     """
     if not _tp_configured():
         return []
@@ -675,372 +672,16 @@ def tp_get_all_my_feeds(perpage: int = 50) -> list[dict]:
     page = 1
 
     while True:
-        feeds, metadata = tp_list_my_feeds(page=page, perpage=perpage)
+        data = tp_get("/affiliate/feeds", params={"page": page, "perpage": 50}) or {}
+        feeds = data.get("feeds") or []
+
+        if isinstance(feeds, dict):
+            feeds = [feeds]
+
         if not feeds:
             break
 
         all_feeds.extend(feeds)
-
-        pagination = metadata.get("pagination") or {}
-        current = pagination.get("current_page")
-        pages = pagination.get("pages")
-
-        if not current or not pages or current >= pages:
-            break
-
-        page += 1
-        if page > 40:  # safety guard
-            break
-
-    return all_feeds
-
-
-def tp_get_or_create_program_feed(
-    program: dict,
-    fields: list[str] | None = None,
-) -> dict | None:
-    """
-    Nummer 5:
-    Sikrer at der findes ÉT affiliate-feed for et givent program.
-
-    Strategi:
-      1) Byg et deterministisk navn, fx "<programnavn> (auto)".
-      2) Tjek alle eksisterende feeds for samme navn.
-         - Hvis det allerede findes -> returnér det (idempotent).
-      3) Hvis ikke:
-         - Hent alle product_feeds for programmet via /affiliate/product_feeds
-         - Saml deres IDs som tool_ids
-         - Opret nyt feed via POST /affiliate/feeds.json
-    """
-    if not _tp_configured():
-        return None
-
-    pid = program.get("id")
-    if not pid:
-        return None
-
-    base_name = program.get("name") or program.get("slug") or f"Program {pid}"
-    feed_name = f"{base_name} (auto)"
-
-    # 1) tjek om feedet allerede findes (vi kigger bare på navn – simpelt og stabilt)
-    try:
-        existing_feeds = tp_get_all_my_feeds()
-    except Exception:
-        existing_feeds = []
-
-    for f in existing_feeds:
-        if (f.get("name") or "").strip() == feed_name:
-            # allerede oprettet
-            return f
-
-    # 2) Hent alle product_feeds (tools) for programmet
-    tool_ids: list[int] = []
-    page = 1
-
-    while True:
-        product_feeds, meta = tp_list_product_feeds(program_id=pid, page=page)
-        if not product_feeds:
-            break
-
-        for pf in product_feeds:
-            if not isinstance(pf, dict):
-                continue
-            pf_id = pf.get("id")
-            if pf_id is not None:
-                try:
-                    tool_ids.append(int(pf_id))
-                except Exception:
-                    continue
-
-        pagination = meta.get("pagination") or {}
-        current = pagination.get("current_page")
-        pages = pagination.get("pages")
-        if not current or not pages or current >= pages:
-            break
-
-        page += 1
-        if page > 40:
-            break
-
-    if not tool_ids:
-        # programmet har ingen product_feeds – så kan vi ikke lave et feed for det
-        return None
-
-    # 3) Opret feedet
-    try:
-        new_feed = tp_create_feed(name=feed_name, tool_ids=tool_ids, fields=fields)
-    except Exception as e:
-        st.warning(f"Kunne ikke oprette feed for program {pid} ({base_name}): {e}")
-        return None
-
-    return new_feed
-
-
-def tp_create_feeds_for_all_programs(
-    fields: list[str] | None = None,
-    limit_programs: int | None = None,
-) -> list[dict]:
-    """
-    Helper der looper ALLE dine affiliate-programmer og sikrer:
-      - Der findes et feed "<programnavn> (auto)" for hvert program der har product_feeds.
-
-    Returnerer liste af feeds (både nye og eksisterende).
-    Brug fx fra en Streamlit-knap:
-
-        if st.button("Opret feeds for alle 2Performant-programmer"):
-            with st.spinner("Opretter/opdaterer feeds..."):
-                feeds = tp_create_feeds_for_all_programs()
-            st.success(f"Færdig – {len(feeds)} feeds i alt.")
-    """
-    if not _tp_configured():
-        st.info(
-            "2Performant er ikke konfigureret – sæt TP_BASE, TP_USER_KEY, "
-            "TP_EMAIL og TP_PASSWORD i Railway/.env."
-        )
-        return []
-
-    try:
-        programs = tp_affiliate_programs()
-    except Exception as e:
-        st.warning(f"Kunne ikke hente affiliate-programmer: {e}")
-        return []
-
-    all_feeds: list[dict] = []
-
-    # brug eksisterende feeds som cache, så vi ikke henter dem igen for hvert program
-    try:
-        existing_feeds = tp_get_all_my_feeds()
-    except Exception:
-        existing_feeds = []
-
-    existing_names = {
-        (f.get("name") or "").strip()
-        for f in existing_feeds
-        if isinstance(f, dict)
-    }
-    all_feeds.extend(existing_feeds)
-
-    count = 0
-
-    for p in programs:
-        pid = p.get("id")
-        if not pid:
-            continue
-
-        base_name = p.get("name") or p.get("slug") or f"Program {pid}"
-        feed_name = f"{base_name} (auto)"
-
-        if feed_name in existing_names:
-            # allerede oprettet
-            continue
-
-        feed = tp_get_or_create_program_feed(p, fields=fields)
-        if feed:
-            existing_names.add(feed_name)
-            all_feeds.append(feed)
-
-        count += 1
-        if limit_programs is not None and count >= limit_programs:
-            break
-
-    return all_feeds
-
-
-# -------------------------------------------------------
-# 2) Login + generelle HTTP-wrappers
-# -------------------------------------------------------
-
-def _tp_get_cached_tokens() -> dict | None:
-    """
-    Hent tokens fra session_state hvis de findes og ikke er udløbet.
-    """
-    tokens = st.session_state.get("_tp_tokens")
-    if not tokens:
-        return None
-
-    expiry = tokens.get("expiry")
-    if isinstance(expiry, (int, float)):
-        # lidt buffer (60 sek) for ikke at ramme udløb midt i et kald
-        if expiry > time.time() + 60:
-            return tokens
-        else:
-            return None
-    return tokens
-
-
-def _tp_sign_in() -> dict:
-    """
-    POST /users/sign_in.json
-
-    Headers:
-      Content-Type: application/json
-      user-key: <TP_USER_KEY>
-
-    Body:
-      { "user": { "email": "...", "password": "..." } }
-
-    Returnerer token-headers + affiliate unique_code.
-    """
-    if not _tp_configured():
-        raise RuntimeError("2Performant env variables mangler (TP_BASE, TP_USER_KEY, TP_EMAIL, TP_PASSWORD).")
-
-    url = f"{TP_BASE}/users/sign_in.json"
-    headers = {
-        "Content-Type": "application/json",
-        "user-key": TP_USER_KEY,
-    }
-    payload = {
-        "user": {
-            "email": TP_EMAIL,
-            "password": TP_PASSWORD,
-        }
-    }
-
-    r = requests.post(url, headers=headers, json=payload, timeout=30)
-    if r.status_code == 401:
-        raise RuntimeError("2Performant login fejlede (401 Unauthorized) – tjek TP_EMAIL/TP_PASSWORD/TP_USER_KEY.")
-    r.raise_for_status()
-
-    data = {}
-    try:
-        data = r.json() or {}
-    except Exception:
-        pass
-
-    user = data.get("user") or {}
-    user_unique_code = user.get("unique_code") or ""  # bruges til quicklinks hvis vi vil
-
-    h = r.headers
-    try:
-        expiry = int(h.get("expiry", "0"))
-    except Exception:
-        expiry = int(time.time()) + 3600
-
-    tokens = {
-        "access-token": h.get("access-token", ""),
-        "client": h.get("client", ""),
-        "uid": h.get("uid", TP_EMAIL),
-        "token-type": h.get("token-type", "Bearer"),
-        "expiry": expiry,
-        "affiliate_unique_code": user_unique_code,
-    }
-
-    st.session_state["_tp_tokens"] = tokens
-    return tokens
-
-
-def _tp_auth_headers() -> dict:
-    """
-    Sørger for at vi har gyldige auth-headers (sign_in hvis nødvendigt).
-    """
-    if not _tp_configured():
-        return {}
-
-    tokens = _tp_get_cached_tokens()
-    if not tokens:
-        tokens = _tp_sign_in()
-
-    return {
-        "Content-Type": "application/json",
-        "access-token": tokens["access-token"],
-        "client": tokens["client"],
-        "uid": tokens["uid"],
-        "token-type": tokens.get("token-type", "Bearer"),
-    }
-
-
-def tp_get(path: str, params: dict | None = None) -> dict:
-    """
-    Generel GET-wrapper mod 2Performant med token-baseret auth.
-    """
-    if not _tp_configured():
-        return {}
-
-    if not path.startswith("/"):
-        path = "/" + path
-    url = f"{TP_BASE}{path}"
-
-    headers = _tp_auth_headers()
-    r = requests.get(url, headers=headers, params=params or {}, timeout=60)
-
-    # token udløbet? prøv én gang mere efter login
-    if r.status_code == 401:
-        st.session_state.pop("_tp_tokens", None)
-        headers = _tp_auth_headers()
-        r = requests.get(url, headers=headers, params=params or {}, timeout=60)
-
-    if r.status_code == 404:
-        # ikke smadre hele UI'et pga. et forkert path
-        st.warning(f"2Performant endpoint 404: {url}")
-        return {}
-
-    r.raise_for_status()
-
-    try:
-        data = r.json()
-    except Exception:
-        return {}
-
-    return data if isinstance(data, dict) else {}
-
-
-def tp_post(path: str, json_body: dict | None = None) -> dict | list:
-    """
-    Generel POST-wrapper mod 2Performant (bruges bl.a. til google_ads_linker og feeds).
-    """
-    if not _tp_configured():
-        return {}
-
-    if not path.startswith("/"):
-        path = "/" + path
-    url = f"{TP_BASE}{path}"
-
-    headers = _tp_auth_headers()
-    r = requests.post(url, headers=headers, json=json_body or {}, timeout=60)
-
-    if r.status_code == 401:
-        st.session_state.pop("_tp_tokens", None)
-        headers = _tp_auth_headers()
-        r = requests.post(url, headers=headers, json=json_body or {}, timeout=60)
-
-    if r.status_code == 404:
-        st.warning(f"2Performant endpoint 404: {url}")
-        return {}
-
-    r.raise_for_status()
-
-    try:
-        data = r.json()
-    except Exception:
-        return {}
-    return data
-
-
-# -------------------------------------------------------
-# 3) Affiliate programmer, bannere, quicklinks, UI-tabel
-# -------------------------------------------------------
-
-@st.cache_data(show_spinner=False, ttl=1800)
-def tp_affiliate_programs() -> list[dict]:
-    """
-    GET /affiliate/programs
-
-    Vi henter alle affiliate-programmer (som din affiliate-bruger har relation til).
-    """
-    if not _tp_configured():
-        return []
-
-    all_programs: list[dict] = []
-    page = 1
-
-    while True:
-        data = tp_get("/affiliate/programs", params={"page": page, "perpage": 50}) or {}
-        programs = data.get("programs") or []
-
-        if not programs:
-            break
-
-        all_programs.extend(programs)
 
         # pagination kan ligge enten som top-level "pagination" eller under metadata
         pagination = data.get("pagination") or (data.get("metadata") or {}).get("pagination") or {}
@@ -1054,109 +695,8 @@ def tp_affiliate_programs() -> list[dict]:
         if page > 40:  # safety
             break
 
-    return all_programs
+    return all_feeds
 
-
-@st.cache_data(show_spinner=False, ttl=1800)
-def tp_affiliate_banner_for_program(program_id: int | str) -> dict | None:
-    """
-    Hent et enkelt banner for et program (for at få en 'link' tracking URL).
-
-    GET /affiliate/banners?program_id=...
-    """
-    if not _tp_configured():
-        return None
-
-    data = tp_get(
-        "/affiliate/banners",
-        params={"program_id": program_id, "page": 1, "perpage": 1},
-    ) or {}
-
-    banners = data.get("banners") or []
-    if isinstance(banners, dict):
-        banners = [banners]
-    if not banners:
-        return None
-    return banners[0]
-
-
-def tp_quicklink_for_url(url: str) -> str:
-    """
-    Brug [Affiliate] Google Ads Linker Tracking Settings til at generere en quicklink-lignende tracking-URL.
-
-    POST /affiliate/google_ads_linker/tracking_settings
-      body: { "tracking_info": [ { "url": "<landing-url>" } ] }
-
-    Svaret er en liste, hvor hvert element har:
-      "tracking_url": "https://b-event.2performant.com/events/click?ad_type=quicklink&aff_code=...&unique=...&redirect_to={lpurl}&st=..."
-
-    Vi erstatter {lpurl} med den rigtige, url-enkodede landing-URL så linket kan bruges direkte.
-    """
-    url = (url or "").strip()
-    if not url:
-        return ""
-
-    try:
-        data = tp_post(
-            "/affiliate/google_ads_linker/tracking_settings",
-            json_body={"tracking_info": [{"url": url}]},
-        )
-    except Exception:
-        return ""
-
-    if isinstance(data, dict):
-        items = [data]
-    else:
-        items = data or []
-
-    if not items:
-        return ""
-
-    first = items[0] or {}
-    tracking_url = first.get("tracking_url") or ""
-    if not tracking_url:
-        return ""
-
-    # erstat Google Ads placeholderen med en rigtig encoded URL
-    if "{lpurl}" in tracking_url:
-        encoded = urllib.parse.quote(url, safe="")
-        tracking_url = tracking_url.replace("{lpurl}", encoded)
-
-    return tracking_url
-
-# ---- 2Performant sektion i app.py ----
-
-if network == "2Performant":
-    st.header("2Performant (affiliate)")
-
-    country_code = st.text_input("Filtrér på land (fx RO, BG, ALL)", value="ALL")
-
-    # 👇 NUMMER 5: knap til at oprette/opdatere product feeds
-    if st.button("Opret / opdater product feeds for alle 2Performant-programmer"):
-        with st.spinner("Opretter/opdaterer feeds fra 2Performant..."):
-            feeds = tp_create_feeds_for_all_programs()
-        st.success(f"Færdig – du har nu {len(feeds)} affiliate-feeds (inkl. dem der allerede fandtes).")
-
-        # Vis et lille overblik over feeds (inkl XML/CSV-links hvis de findes)
-        if feeds:
-            st.subheader("Dine 2Performant product feeds")
-            st.dataframe(
-                [
-                    {
-                        "ID": f.get("id"),
-                        "Navn": f.get("name"),
-                        "Status": f.get("status"),
-                        "XML": f.get("xml_link"),
-                        "CSV": f.get("csv_link"),
-                    }
-                    for f in feeds
-                    if isinstance(f, dict)
-                ],
-                use_container_width=True,
-            )
-
-    # 👇 eksisterende tabel med merchants + tracking links
-    render_2performant_merchants_table(country_code)
 
 def render_2performant_merchants_table(country_code: str):
     """
@@ -1167,6 +707,7 @@ def render_2performant_merchants_table(country_code: str):
       - Produkter + product_feeds_count
       - Et banner tracking-link (hvis vi kan hente et banner)
       - En "Quicklink" tracking-URL til programmets main_url
+      - (NYT) XML- og CSV-feed-URL pr. program, hvis de findes i /affiliate/feeds
     """
     if not _tp_configured():
         st.info(
@@ -1175,6 +716,7 @@ def render_2performant_merchants_table(country_code: str):
         )
         return
 
+    # Hent alle programmer
     try:
         programs = tp_affiliate_programs()
     except Exception as e:
@@ -1188,6 +730,28 @@ def render_2performant_merchants_table(country_code: str):
             "og at credentials (TP_*) er korrekte."
         )
         return
+
+    # 🔗 Hent alle dine feeds én gang og byg opslag pr. program
+    try:
+        feeds = tp_all_my_feeds()
+    except Exception as e:
+        st.warning(f"2Performant /affiliate/feeds fejlede: {e}")
+        feeds = []
+
+    feeds_by_program: dict[int, list[dict]] = {}
+    for f in feeds or []:
+        if not isinstance(f, dict):
+            continue
+
+        # program_id kan ligge direkte eller som nested program.id – vi prøver begge
+        pid = f.get("program_id")
+        if pid is None:
+            pid = (f.get("program") or {}).get("id")
+
+        if not pid:
+            continue
+
+        feeds_by_program.setdefault(int(pid), []).append(f)
 
     cc = (country_code or "").strip().upper()
     rows: list[dict] = []
@@ -1251,6 +815,29 @@ def render_2performant_merchants_table(country_code: str):
         except Exception:
             banner_link = ""
 
+        # 🆕 XML/CSV feed links for netop dette program (fra /affiliate/feeds)
+        program_feeds = feeds_by_program.get(int(pid), []) or []
+        xml_link = ""
+        csv_link = ""
+
+        if program_feeds:
+            # Tag første unikke XML/CSV-link (hvis der er flere feeds til samme program)
+            xml_candidates = [
+                (f.get("xml_link") or "").strip()
+                for f in program_feeds
+                if (f.get("xml_link") or "").strip()
+            ]
+            csv_candidates = [
+                (f.get("csv_link") or "").strip()
+                for f in program_feeds
+                if (f.get("csv_link") or "").strip()
+            ]
+
+            if xml_candidates:
+                xml_link = xml_candidates[0]
+            if csv_candidates:
+                csv_link = csv_candidates[0]
+
         rows.append(
             {
                 "Program ID": pid,
@@ -1265,6 +852,8 @@ def render_2performant_merchants_table(country_code: str):
                 "Payment type": payment_type,
                 "Banner tracking link": banner_link,
                 "Quicklink to main URL": quicklink,
+                "XML feed": xml_link,
+                "CSV feed": csv_link,
             }
         )
 
@@ -1288,9 +877,8 @@ def render_2performant_merchants_table(country_code: str):
     st.subheader(f"Merchants i {country_code or 'ALL'} • 2Performant (affiliate)")
     st.caption(
         "Data hentes fra 2Performant Affiliate API: /affiliate/programs, /affiliate/banners, "
-        "/affiliate/google_ads_linker/tracking_settings og (valgfrit) feeds-endpoints.\n"
-        "Bemærk: den offentlige API-del viser kun *antal* product feeds i program-svaret – "
-        "selve CSV/XML-feed-URL'erne ligger i /affiliate/feeds."
+        "/affiliate/google_ads_linker/tracking_settings og /affiliate/feeds.\n"
+        "Vi viser XML/CSV-feed-URL'er pr. program, når der findes feeds i din konto."
     )
 
     try:
@@ -1302,6 +890,8 @@ def render_2performant_merchants_table(country_code: str):
                 "Main URL": st.column_config.LinkColumn("Main URL"),
                 "Banner tracking link": st.column_config.LinkColumn("Banner tracking link"),
                 "Quicklink to main URL": st.column_config.LinkColumn("Quicklink to main URL"),
+                "XML feed": st.column_config.LinkColumn("XML feed"),
+                "CSV feed": st.column_config.LinkColumn("CSV feed"),
             },
         )
     except Exception:
