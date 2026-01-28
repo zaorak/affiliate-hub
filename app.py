@@ -583,6 +583,73 @@ def _tp_configured() -> bool:
     """Er 2Performant sat op med env-var?"""
     return bool(TP_BASE and TP_USER_KEY and TP_EMAIL and TP_PASSWORD)
 
+# 1) Liste over alle tilgængelige merchant product feeds
+def tp_list_product_feeds(program_id: int | None = None, page: int = 1):
+    """
+    Wrapper omkring GET /affiliate/product_feeds
+
+    Returnerer (product_feeds, metadata)
+    """
+    params = {"page": page}
+    if program_id is not None:
+        # 2Performant bruger filter[program_id] som query-param
+        params["filter[program_id]"] = str(program_id)
+
+    data = tp_get("/affiliate/product_feeds", params=params)
+    return data.get("product_feeds", []), data.get("metadata", {})
+
+# 2) Opret et nyt feed i din konto (som så får xml_link / csv_link)
+DEFAULT_FEED_FIELDS = [
+    "title",
+    "url",
+    "price",
+    "old_price",
+    "product_id",
+    "gtin",
+    "brand",
+    "category",
+    "image_urls",
+    "description",
+    "product_active",
+    "created_at",
+    "aff_code",
+]
+
+def tp_create_feed(name: str, tool_ids: list[int], fields: list[str] | None = None):
+    """
+    Wrapper omkring POST /affiliate/feeds.json
+
+    name: et navn du selv vælger til feedet
+    tool_ids: liste af product_feed IDs fra /affiliate/product_feeds
+    fields: hvilke kolonner du vil have i dit feed
+    """
+    if fields is None:
+        fields = DEFAULT_FEED_FIELDS
+
+    payload = {
+        "feed": {
+            "name": name,
+            "fields": fields,
+            "tool_ids": tool_ids,
+        }
+    }
+
+    data = tp_post("/affiliate/feeds.json", json=payload)
+    return data.get("feed")
+
+# 3) Hent dine feeds (dem der har xml_link / csv_link)
+def tp_list_my_feeds(page: int = 1, perpage: int = 20, program_id: int | None = None):
+    """
+    Wrapper omkring GET /affiliate/feeds
+
+    Returnerer (feeds, metadata)
+    """
+    params = {"page": page, "perpage": perpage}
+    if program_id is not None:
+        params["filter[program_id]"] = str(program_id)
+
+    data = tp_get("/affiliate/feeds", params=params)
+    return data.get("feeds", []), data.get("metadata", {})
 
 def _tp_get_cached_tokens() -> dict | None:
     """
