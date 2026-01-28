@@ -590,6 +590,103 @@ def _tp_configured() -> bool:
     return bool(TP_BASE and TP_USER_KEY and TP_EMAIL and TP_PASSWORD)
 
 
+# 1) Liste over alle tilgængelige merchant product feeds
+def tp_list_product_feeds(program_id: int | None = None, page: int = 1):
+    """
+    Wrapper omkring GET /affiliate/product_feeds
+
+    Returnerer (product_feeds, metadata)
+    """
+    params = {"page": page}
+    if program_id is not None:
+        # 2Performant bruger filter[program_id] som query-param
+        params["filter[program_id]"] = str(program_id)
+
+    data = tp_get("/affiliate/product_feeds", params=params)
+    return data.get("product_feeds", []), data.get("metadata", {})
+
+
+# 2) Opret et nyt feed i din konto (som så får xml_link / csv_link)
+DEFAULT_FEED_FIELDS = [
+    "title",
+    "url",
+    "price",
+    "old_price",
+    "product_id",
+    "gtin",
+    "brand",
+    "category",
+    "image_urls",
+    "description",
+    "product_active",
+    "created_at",
+    "aff_code",
+]
+
+
+def tp_create_feed(name: str, tool_ids: list[int], fields: list[str] | None = None):
+    """
+    Wrapper omkring POST /affiliate/feeds.json
+
+    name: et navn du selv vælger til feedet
+    tool_ids: liste af product_feed IDs fra /affiliate/product_feeds
+    fields: hvilke kolonner du vil have i dit feed
+    """
+    if fields is None:
+        fields = DEFAULT_FEED_FIELDS
+
+    payload = {
+        "feed": {
+            "name": name,
+            "fields": fields,
+            "tool_ids": tool_ids,
+        }
+    }
+
+    data = tp_post("/affiliate/feeds.json", json_body=payload)
+    return data.get("feed")
+
+
+# 3) Hent dine feeds (dem der har xml_link / csv_link)
+def tp_list_my_feeds(
+    page: int = 1,
+    perpage: int = 20,
+    program_id: int | None = None,
+):
+    """
+    Wrapper omkring GET /affiliate/feeds
+
+    Returnerer (feeds, metadata)
+    """
+    params = {"page": page, "perpage": perpage}
+    if program_id is not None:
+        # iflg. feeds-endpoints: filter[program_id] kan bruges her
+        params["filter[program_id]"] = str(program_id)
+
+    data = tp_get("/affiliate/feeds", params=params)
+    return data.get("feeds", []), data.get("metadata", {})
+
+
+@st.cache_data(show_spinner=False, ttl=900)
+def tp_feeds_for_program(program_id: int) -> list[dict]:
+    """
+    Hent alle affiliate-feeds for ET bestemt program via /affiliate/feeds?filter[program_id]=...
+
+    Returnerer en liste af feed-objekter (hver har typisk xml_link og csv_link).
+    """
+    if not _tp_configured():
+        return []
+
+    try:
+        feeds, _meta = tp_list_my_feeds(page=1, perpage=50, program_id=program_id)
+    except Exception:
+        return []
+
+    if isinstance(feeds, dict):
+        feeds = [feeds]
+    return feeds or []
+
+
 def _tp_get_cached_tokens() -> dict | None:
     """
     Hent tokens fra session_state hvis de findes og ikke er udløbet.
@@ -622,7 +719,9 @@ def _tp_sign_in() -> dict:
     Returnerer token-headers + affiliate unique_code.
     """
     if not _tp_configured():
-        raise RuntimeError("2Performant env variables mangler (TP_BASE, TP_USER_KEY, TP_EMAIL, TP_PASSWORD).")
+        raise RuntimeError(
+            "2Performant env variables mangler (TP_BASE, TP_USER_KEY, TP_EMAIL, TP_PASSWORD)."
+        )
 
     url = f"{TP_BASE}/users/sign_in.json"
     headers = {
@@ -638,7 +737,9 @@ def _tp_sign_in() -> dict:
 
     r = requests.post(url, headers=headers, json=payload, timeout=30)
     if r.status_code == 401:
-        raise RuntimeError("2Performant login fejlede (401 Unauthorized) – tjek TP_EMAIL/TP_PASSWORD/TP_USER_KEY.")
+        raise RuntimeError(
+            "2Performant login fejlede (401 Unauthorized) – tjek TP_EMAIL/TP_PASSWORD/TP_USER_KEY."
+        )
     r.raise_for_status()
 
     data = {}
@@ -726,7 +827,7 @@ def tp_get(path: str, params: dict | None = None) -> dict:
 
 def tp_post(path: str, json_body: dict | None = None) -> dict | list:
     """
-    Generel POST-wrapper mod 2Performant (bruges bl.a. til google_ads_linker).
+    Generel POST-wrapper mod 2Performant (bruges bl.a. til google_ads_linker og feeds).
     """
     if not _tp_configured():
         return {}
@@ -779,7 +880,11 @@ def tp_affiliate_programs() -> list[dict]:
         all_programs.extend(programs)
 
         # pagination kan ligge enten som top-level "pagination" eller under metadata
-        pagination = data.get("pagination") or (data.get("metadata") or {}).get("pagination") or {}
+        pagination = (
+            data.get("pagination")
+            or (data.get("metadata") or {}).get("pagination")
+            or {}
+        )
         current = pagination.get("current_page")
         pages = pagination.get("pages")
 
@@ -819,6 +924,14 @@ def tp_affiliate_banner_for_program(program_id: int | str) -> dict | None:
 def tp_quicklink_for_url(url: str) -> str:
     """
     Brug [Affiliate] Google Ads Linker Tracking Settings til at generere en quicklink-lignende tracking-URL.
+
+    POST /affiliate/google_ads_linker/tracking_settings
+      body: { "tracking_info": [ { "url": "<landing-url>" } ] }
+
+    Svaret er en liste, hvor hvert element har:
+      "tracking_url": "https://b-event.2performant.com/events/click?ad_type=quicklink&aff_code=...&unique=...&redirect_to={lpurl}&st=..."
+
+    Vi erstatter {lpurl} med den rigtige, url-enkodede landing-URL så linket kan bruges direkte.
     """
     url = (url or "").strip()
     if not url:
@@ -853,62 +966,6 @@ def tp_quicklink_for_url(url: str) -> str:
     return tracking_url
 
 
-# ----- Feeds -----
-
-def tp_list_my_feeds(page: int = 1, perpage: int = 20, program_id: int | None = None):
-    """
-    Wrapper omkring GET /affiliate/feeds
-
-    Returnerer (feeds, metadata)
-    """
-    params = {"page": page, "perpage": perpage}
-    if program_id is not None:
-        params["filter[program_id]"] = str(program_id)
-
-    data = tp_get("/affiliate/feeds", params=params)
-    return data.get("feeds", []), data.get("metadata", {})
-
-
-@st.cache_data(show_spinner=False, ttl=1800)
-def tp_all_my_feeds() -> list[dict]:
-    """
-    Hent ALLE dine affiliate-feeds fra /affiliate/feeds (paginering).
-
-    Bruges til at matche feed-URLs (xml_link/csv_link) til hvert program.
-    """
-    if not _tp_configured():
-        return []
-
-    all_feeds: list[dict] = []
-    page = 1
-
-    while True:
-        data = tp_get("/affiliate/feeds", params={"page": page, "perpage": 50}) or {}
-        feeds = data.get("feeds") or []
-
-        if isinstance(feeds, dict):
-            feeds = [feeds]
-
-        if not feeds:
-            break
-
-        all_feeds.extend(feeds)
-
-        # pagination kan ligge enten som top-level "pagination" eller under metadata
-        pagination = data.get("pagination") or (data.get("metadata") or {}).get("pagination") or {}
-        current = pagination.get("current_page")
-        pages = pagination.get("pages")
-
-        if not current or not pages or current >= pages:
-            break
-
-        page += 1
-        if page > 40:  # safety
-            break
-
-    return all_feeds
-
-
 def render_2performant_merchants_table(country_code: str):
     """
     Viser dine 2Performant-programmer som affiliate med:
@@ -918,7 +975,7 @@ def render_2performant_merchants_table(country_code: str):
       - Produkter + product_feeds_count
       - Et banner tracking-link (hvis vi kan hente et banner)
       - En "Quicklink" tracking-URL til programmets main_url
-      - XML- og CSV-feed-URL pr. program, hvis de findes i /affiliate/feeds
+      - (NYT) xml/csv feed URL pr. program, hvis der findes et affiliate-feed i /affiliate/feeds
     """
     if not _tp_configured():
         st.info(
@@ -927,7 +984,6 @@ def render_2performant_merchants_table(country_code: str):
         )
         return
 
-    # Hent alle programmer
     try:
         programs = tp_affiliate_programs()
     except Exception as e:
@@ -941,27 +997,6 @@ def render_2performant_merchants_table(country_code: str):
             "og at credentials (TP_*) er korrekte."
         )
         return
-
-    # Hent alle dine feeds én gang og byg opslag pr. program
-    try:
-        feeds = tp_all_my_feeds()
-    except Exception as e:
-        st.warning(f"2Performant /affiliate/feeds fejlede: {e}")
-        feeds = []
-
-    feeds_by_program: dict[int, list[dict]] = {}
-    for f in feeds or []:
-        if not isinstance(f, dict):
-            continue
-
-        pid = f.get("program_id")
-        if pid is None:
-            pid = (f.get("program") or {}).get("id")
-
-        if not pid:
-            continue
-
-        feeds_by_program.setdefault(int(pid), []).append(f)
 
     cc = (country_code or "").strip().upper()
     rows: list[dict] = []
@@ -1024,27 +1059,25 @@ def render_2performant_merchants_table(country_code: str):
         except Exception:
             banner_link = ""
 
-        # XML/CSV feed links for netop dette program (fra /affiliate/feeds)
-        program_feeds = feeds_by_program.get(int(pid), []) or []
-        xml_link = ""
-        csv_link = ""
-
-        if program_feeds:
-            xml_candidates = [
-                (f.get("xml_link") or "").strip()
-                for f in program_feeds
-                if (f.get("xml_link") or "").strip()
-            ]
-            csv_candidates = [
-                (f.get("csv_link") or "").strip()
-                for f in program_feeds
-                if (f.get("csv_link") or "").strip()
-            ]
-
-            if xml_candidates:
-                xml_link = xml_candidates[0]
-            if csv_candidates:
-                csv_link = csv_candidates[0]
+        # XML/CSV feed-link fra /affiliate/feeds for netop dette program
+        feed_xml = ""
+        feed_csv = ""
+        if feeds_count and feeds_count > 0:
+            try:
+                program_feeds = tp_feeds_for_program(int(pid))
+                if program_feeds:
+                    # prøv at vælge et aktivt feed først
+                    active = [
+                        f
+                        for f in program_feeds
+                        if str(f.get("status") or "").lower() == "active"
+                    ]
+                    feed = active[0] if active else program_feeds[0]
+                    feed_xml = feed.get("xml_link") or ""
+                    feed_csv = feed.get("csv_link") or ""
+            except Exception:
+                # hvis feeds-endpoint fejler, lader vi bare felterne være tomme
+                pass
 
         rows.append(
             {
@@ -1056,12 +1089,12 @@ def render_2performant_merchants_table(country_code: str):
                 "Countries": selling_str,
                 "Products": products_count,
                 "Product feeds (count)": feeds_count,
+                "Feed XML": feed_xml,
+                "Feed CSV": feed_csv,
                 "Banners (count)": banners_count,
                 "Payment type": payment_type,
                 "Banner tracking link": banner_link,
                 "Quicklink to main URL": quicklink,
-                "XML feed": xml_link,
-                "CSV feed": csv_link,
             }
         )
 
@@ -1086,7 +1119,8 @@ def render_2performant_merchants_table(country_code: str):
     st.caption(
         "Data hentes fra 2Performant Affiliate API: /affiliate/programs, /affiliate/banners, "
         "/affiliate/google_ads_linker/tracking_settings og /affiliate/feeds.\n"
-        "Vi viser XML/CSV-feed-URL'er pr. program, når der findes feeds i din konto."
+        "For hvert program med produkt-feeds forsøger vi at vise et XML- og CSV-feed "
+        "fra dine egne affiliate-feeds."
     )
 
     try:
@@ -1098,8 +1132,8 @@ def render_2performant_merchants_table(country_code: str):
                 "Main URL": st.column_config.LinkColumn("Main URL"),
                 "Banner tracking link": st.column_config.LinkColumn("Banner tracking link"),
                 "Quicklink to main URL": st.column_config.LinkColumn("Quicklink to main URL"),
-                "XML feed": st.column_config.LinkColumn("XML feed"),
-                "CSV feed": st.column_config.LinkColumn("CSV feed"),
+                "Feed XML": st.column_config.LinkColumn("Feed XML"),
+                "Feed CSV": st.column_config.LinkColumn("Feed CSV"),
             },
         )
     except Exception:
