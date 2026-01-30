@@ -2432,34 +2432,30 @@ def render_dognet_merchants_table(country_code: str):
 
     ids = dognet_channel_ids()
     if not ids:
-        st.info("Tip: set DOGNET_AD_CHANNEL_IDS (comma separated) to list your approved campaigns and generate links.")
+        st.info('Tip: set DOGNET_AD_CHANNEL_IDS="31109,31107,31105,31103" in Railway/.env')
         return
 
+    try:
+        campaigns = []
+        for ad_channel_id in ids:
+            campaigns.extend(dognet_campaigns_mine(ad_channel_id, status=1))  # approved
 
-    # Use all configured Dognet ad channels (Railway: DOGNET_AD_CHANNEL_IDS="31109,31107,31105,31103")
-ids = dognet_channel_ids() or [31109, 31107, 31105, 31103]  # fallback if env not set
+        # Deduplicate by campaign id (same campaign can appear for multiple channels)
+        dedup = {}
+        for c in campaigns:
+            cid = c.get("id") or c.get("campaign_id") or c.get("campaignId")
+            key = str(cid) if cid is not None else None
+            if key:
+                dedup[key] = c
+            else:
+                dedup[f"noid-{len(dedup)}"] = c
+        campaigns = list(dedup.values())
 
-try:
-    campaigns = []
-    for ad_channel_id in ids:
-        campaigns.extend(dognet_campaigns_mine(ad_channel_id, status=1))  # approved
+    except Exception as e:
+        st.error(f"Dognet campaigns fetch failed: {e}")
+        return
 
-    # Deduplicate by campaign id (same campaign can appear for multiple channels)
-    dedup = {}
-    for c in campaigns:
-        cid = c.get("id") or c.get("campaign_id") or c.get("campaignId")
-        key = str(cid) if cid is not None else None
-        if key:
-            dedup[key] = c
-        else:
-            # If no id field, keep it but avoid crashing
-            dedup[f"noid-{len(dedup)}"] = c
-
-    campaigns = list(dedup.values())
-
-except Exception as e:
-    st.error(f"Dognet campaigns fetch failed: {e}")
-    return
+    # ... resten af din tabel/rendering kode fortsætter her ...
 
     feed_rows = []
     try:
