@@ -3940,7 +3940,7 @@ def _render_country(cc: str):
                 elif net == "2Performant":
                     render_2performant_merchants_table(cc)
                 elif net == "Dognet":
-                    render_dognet_merchants_table(cc)
+                    render_dognet_feeds_and_campaigns()
     else:
         if "AWIN" in networks:
             render_awin_merchants_table(
@@ -3961,7 +3961,7 @@ def _render_country(cc: str):
         if "2Performant" in networks:
             render_2performant_merchants_table(cc)
         if "Dognet" in networks:
-            render_dognet_merchants_table(cc)
+            render_dognet_feeds_and_campaigns()
 
 if len(countries_list) > 1:
     country_tabs = st.tabs(countries_list)
