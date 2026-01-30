@@ -2126,7 +2126,18 @@ def cached_awin_tracking_link(advertiser_id: int, clickref: str | None = None) -
 DOGNET_BASE = (os.getenv("DOGNET_BASE") or "https://api.app.dognet.com/api/v1").rstrip("/")
 DOGNET_EMAIL = (os.getenv("DOGNET_EMAIL") or "").strip()
 DOGNET_PASSWORD = (os.getenv("DOGNET_PASSWORD") or "").strip()
-DOGNET_AD_CHANNEL_ID = (os.getenv("DOGNET_AD_CHANNEL_ID") or "").strip()
+DOGNET_AD_CHANNEL_IDS = (os.getenv("DOGNET_AD_CHANNEL_IDS") or "").strip()
+DOGNET_AD_CHANNEL_ID = (os.getenv("DOGNET_AD_CHANNEL_ID") or "").strip()  # fallback
+def dognet_channel_ids() -> list[int]:
+    raw = DOGNET_AD_CHANNEL_IDS or DOGNET_AD_CHANNEL_ID
+    if not raw:
+        return []
+    ids = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part:
+            ids.append(int(part))
+    return ids
 
 def _dognet_configured() -> bool:
     return bool(DOGNET_BASE and DOGNET_EMAIL and DOGNET_PASSWORD)
@@ -2419,15 +2430,36 @@ def render_dognet_merchants_table(country_code: str):
         st.info("Dognet is selected, but DOGNET_EMAIL / DOGNET_PASSWORD are not configured in .env.")
         return
 
-    if not DOGNET_AD_CHANNEL_ID:
-        st.info("Tip: set DOGNET_AD_CHANNEL_ID in .env to list your approved campaigns and generate links.")
+    ids = dognet_channel_ids()
+    if not ids:
+        st.info("Tip: set DOGNET_AD_CHANNEL_IDS (comma separated) to list your approved campaigns and generate links.")
         return
 
-    try:
-        campaigns = dognet_campaigns_mine(DOGNET_AD_CHANNEL_ID, status=1)  # approved
-    except Exception as e:
-        st.error(f"Dognet campaigns fetch failed: {e}")
-        return
+
+    # Use all configured Dognet ad channels (Railway: DOGNET_AD_CHANNEL_IDS="31109,31107,31105,31103")
+ids = dognet_channel_ids() or [31109, 31107, 31105, 31103]  # fallback if env not set
+
+try:
+    campaigns = []
+    for ad_channel_id in ids:
+        campaigns.extend(dognet_campaigns_mine(ad_channel_id, status=1))  # approved
+
+    # Deduplicate by campaign id (same campaign can appear for multiple channels)
+    dedup = {}
+    for c in campaigns:
+        cid = c.get("id") or c.get("campaign_id") or c.get("campaignId")
+        key = str(cid) if cid is not None else None
+        if key:
+            dedup[key] = c
+        else:
+            # If no id field, keep it but avoid crashing
+            dedup[f"noid-{len(dedup)}"] = c
+
+    campaigns = list(dedup.values())
+
+except Exception as e:
+    st.error(f"Dognet campaigns fetch failed: {e}")
+    return
 
     feed_rows = []
     try:
