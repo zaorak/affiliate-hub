@@ -2121,12 +2121,364 @@ def cached_awin_tracking_link(advertiser_id: int, clickref: str | None = None) -
     cref = quote((clickref or "").strip())
     return f"https://ui.awin.com/affiliate/affiliate-tools/link-builder?awinmid={advertiser_id}&clickref={cref}"
 
+# ----- Dognet (affiliate) – login + campaigns + tracking links + feeds + commissions -----
+
+DOGNET_BASE = (os.getenv("DOGNET_BASE") or "https://api.app.dognet.com/api/v1").rstrip("/")
+DOGNET_EMAIL = (os.getenv("DOGNET_EMAIL") or "").strip()
+DOGNET_PASSWORD = (os.getenv("DOGNET_PASSWORD") or "").strip()
+DOGNET_AD_CHANNEL_ID = (os.getenv("DOGNET_AD_CHANNEL_ID") or "").strip()
+
+def _dognet_configured() -> bool:
+    return bool(DOGNET_BASE and DOGNET_EMAIL and DOGNET_PASSWORD)
+
+def _dognet_login() -> dict:
+    if not _dognet_configured():
+        return {}
+    url = f"{DOGNET_BASE}/auth/login"
+    r = requests.post(
+        url,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        json={"email": DOGNET_EMAIL, "password": DOGNET_PASSWORD},
+        timeout=60,
+    )
+    r.raise_for_status()
+    data = r.json() or {}
+
+    token = data.get("token") or data.get("access_token") or (data.get("data") or {}).get("token")
+    if not token:
+        raise RuntimeError("Dognet login succeeded but response did not include token.")
+    auth = {
+        "token": token,
+        "timezone": data.get("timezone") or (data.get("data") or {}).get("timezone"),
+        "currency": (data.get("currency") or (data.get("data") or {}).get("currency") or "EUR").upper(),
+        "obtained_at": time.time(),
+    }
+    st.session_state["_dognet_auth"] = auth
+    return auth
+
+def _dognet_auth() -> dict:
+    if not _dognet_configured():
+        return {}
+    auth = st.session_state.get("_dognet_auth") or {}
+    if not auth.get("token"):
+        auth = _dognet_login()
+    return auth
+
+def _dognet_request(method: str, path: str, params: dict | None = None, json_body=None, retry401: bool = True):
+    if not _dognet_configured():
+        return {}
+    if not path.startswith("/"):
+        path = "/" + path
+    url = f"{DOGNET_BASE}{path}"
+    auth = _dognet_auth()
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {auth.get('token','')}",
+    }
+
+    r = requests.request(method, url, headers=headers, params=params or {}, json=json_body, timeout=60)
+
+    # token expired? retry once
+    if r.status_code == 401 and retry401:
+        st.session_state.pop("_dognet_auth", None)
+        auth = _dognet_login()
+        headers["Authorization"] = f"Bearer {auth.get('token','')}"
+        r = requests.request(method, url, headers=headers, params=params or {}, json=json_body, timeout=60)
+
+    # rate limit
+    if r.status_code == 429:
+        retry_after = int(r.headers.get("Retry-After") or "1")
+        time.sleep(max(1, retry_after))
+        return _dognet_request(method, path, params=params, json_body=json_body, retry401=retry401)
+
+    r.raise_for_status()
+    try:
+        return r.json()
+    except Exception:
+        return {}
+
+def dognet_get(path: str, params: dict | None = None) -> dict:
+    return _dognet_request("GET", path, params=params)
+
+def dognet_post(path: str, json_body=None, params: dict | None = None) -> dict:
+    return _dognet_request("POST", path, params=params, json_body=json_body)
+
+@st.cache_data(show_spinner=False, ttl=6*60*60)
+def dognet_ad_channels() -> list[dict]:
+    if not _dognet_configured():
+        return []
+    data = dognet_get("/ad-channels") or {}
+    rows = data.get("data") if isinstance(data, dict) else None
+    if rows is None:
+        # some APIs return list directly
+        rows = data if isinstance(data, list) else []
+    if isinstance(rows, dict):
+        rows = [rows]
+    return rows or []
+
+def dognet_ad_channel_code(ad_channel_id: int | str) -> str:
+    try:
+        target = int(str(ad_channel_id))
+    except Exception:
+        return ""
+    for ch in dognet_ad_channels():
+        cid = ch.get("id") or ch.get("ad_channel_id")
+        try:
+            if int(str(cid)) == target:
+                return str(ch.get("code") or ch.get("chid") or ch.get("ad_channel_code") or "").strip()
+        except Exception:
+            continue
+    return ""
+
+def dognet_campaigns_mine(ad_channel_id: int | str, status: int = 1) -> list[dict]:
+    if not _dognet_configured():
+        return []
+    body = {
+        "filter": [
+            {"ad_channel_id": {"eq": int(str(ad_channel_id))}},
+            {"ad_channel_in_campaign_status": {"eq": int(status)}},
+        ]
+    }
+    data = dognet_post("/campaigns/mine/filter", json_body=body) or {}
+    rows = data.get("data") if isinstance(data, dict) else None
+    if rows is None:
+        rows = data if isinstance(data, list) else []
+    if isinstance(rows, dict):
+        rows = [rows]
+    return rows or []
+
+def dognet_generate_link(ad_channel_id: int | str, campaign_id: int | str, url: str, data1: str = "", data2: str = "", url_type: int = 3) -> str:
+    if not _dognet_configured():
+        return ""
+    body = {
+        "ad_channel_id": int(str(ad_channel_id)),
+        "campaign_id": int(str(campaign_id)),
+        "url": url,
+        "data1": data1 or "",
+        "data2": data2 or "",
+        "url_type": int(url_type),
+    }
+    data = dognet_post("/campaigns/links/generate", json_body=body) or {}
+    # best-effort field detection
+    if isinstance(data, dict):
+        for k in ("link", "url", "affiliate_link", "tracking_url"):
+            v = data.get(k)
+            if v and str(v).startswith("http"):
+                return str(v)
+        inner = data.get("data") or {}
+        if isinstance(inner, dict):
+            for k in ("link", "url", "affiliate_link", "tracking_url"):
+                v = inner.get(k)
+                if v and str(v).startswith("http"):
+                    return str(v)
+    return ""
+
+def _dognet_amount(r: dict) -> float:
+    for k in (
+        "publisher_commission",
+        "commission",
+        "commission_amount",
+        "commission_value",
+        "payout",
+        "amount",
+        "value",
+        "price_commission",
+    ):
+        v = r.get(k)
+        if v is None:
+            continue
+        try:
+            return float(str(v).replace(",", "").strip())
+        except Exception:
+            pass
+    return 0.0
+
+def _dognet_status(r: dict) -> str:
+    return str(r.get("rstatus") or r.get("status") or "").strip().upper()
+
+def dognet_transactions_filter(start_dt: str, end_dt: str, per_page: int = 500, subrefs: list[str] | None = None, contains: bool = False):
+    # returns list of rows using last_id scrolling (stop when data empty)
+    if not _dognet_configured():
+        return []
+
+    flt = [
+        {"rstatus": {"in": ["A", "P"]}},
+        {"created_at": {"gte": start_dt}},
+        {"created_at": {"lte": end_dt}},
+    ]
+
+    last_id = None
+    out = []
+    safety_pages = 0
+    while True:
+        body = {"filter": flt, "per-page": int(per_page)}
+        if last_id is not None:
+            body["last_id"] = last_id
+        resp = dognet_post("/raw-transactions/filter", json_body=body) or {}
+        data_rows = resp.get("data") if isinstance(resp, dict) else None
+        if data_rows is None:
+            data_rows = resp if isinstance(resp, list) else []
+        if isinstance(data_rows, dict):
+            data_rows = [data_rows]
+        if not data_rows:
+            break
+
+        # client-side subref filtering (Dognet filter docs don't list subref fields)
+        if subrefs:
+            srefs = [str(x).strip() for x in subrefs if str(x).strip()]
+            if srefs:
+                def _hit(row: dict) -> bool:
+                    fields = [
+                        row.get("data1"), row.get("data2"),
+                        row.get("subid"), row.get("sub_id"),
+                        row.get("clickref"), row.get("click_ref"),
+                        row.get("click_id"), row.get("clickid"),
+                    ]
+                    text = " ".join([str(v) for v in fields if v is not None])
+                    if contains:
+                        t = text.lower()
+                        return any(s.lower() in t for s in srefs)
+                    return any(s == str(v).strip() for s in srefs for v in fields if v is not None)
+                data_rows = [r for r in data_rows if _hit(r)]
+
+        out.extend(data_rows)
+
+        meta = (resp.get("meta") if isinstance(resp, dict) else None) or {}
+        last_id = meta.get("last_id")
+        if last_id is None:
+            mx = None
+            for rr in data_rows:
+                try:
+                    rid = int(str(rr.get("id")))
+                    mx = rid if mx is None else max(mx, rid)
+                except Exception:
+                    pass
+            last_id = mx
+
+        safety_pages += 1
+        if safety_pages > 2000:
+            break
+
+    return out
+
+def dognet_commission_aggregate(start_date: str, end_date: str, subrefs: list[str] | None = None, contains: bool = False, target_ccy: str | None = None) -> dict:
+    if not _dognet_configured():
+        return {"total_comm": 0.0, "confirmed_comm": 0.0, "pending_comm": 0.0, "raw": [], "meta": {}}
+
+    start_dt = f"{start_date} 00:00:00"
+    end_dt = f"{end_date} 23:59:59"
+
+    rows = dognet_transactions_filter(start_dt, end_dt, per_page=500, subrefs=subrefs, contains=contains)
+
+    auth = _dognet_auth()
+    src_ccy = (auth.get("currency") or "EUR").upper()
+    tgt = (target_ccy or src_ccy).upper()
+    fx = get_fx_rate(src_ccy, tgt) if src_ccy != tgt else 1.0
+
+    confirmed = pending = 0.0
+    for r in rows:
+        stt = _dognet_status(r)
+        amt = _dognet_amount(r)
+        if stt == "A":
+            confirmed += amt
+        elif stt == "P":
+            pending += amt
+
+    return {
+        "total_comm": (confirmed + pending) * fx,
+        "confirmed_comm": confirmed * fx,
+        "pending_comm": pending * fx,
+        "raw": rows,
+        "meta": {
+            "source_currency": src_ccy,
+            "target_currency": tgt,
+            "fx_rate_used": fx,
+            "window": f"{start_date} → {end_date}",
+            "timezone": auth.get("timezone") or "",
+            "ad_channel_id": DOGNET_AD_CHANNEL_ID or "",
+        },
+    }
+
+@st.cache_data(show_spinner=False, ttl=6*60*60)
+def dognet_feeds() -> list[dict]:
+    if not _dognet_configured():
+        return []
+    data = dognet_get("/campaigns/feeds") or {}
+    rows = data.get("data") if isinstance(data, dict) else None
+    if rows is None:
+        rows = data if isinstance(data, list) else []
+    if isinstance(rows, dict):
+        rows = [rows]
+    return rows or []
+
+def render_dognet_merchants_table(country_code: str):
+    st.subheader("Campaigns • Dognet")
+
+    if not _dognet_configured():
+        st.info("Dognet is selected, but DOGNET_EMAIL / DOGNET_PASSWORD are not configured in .env.")
+        return
+
+    if not DOGNET_AD_CHANNEL_ID:
+        st.info("Tip: set DOGNET_AD_CHANNEL_ID in .env to list your approved campaigns and generate links.")
+        return
+
+    try:
+        campaigns = dognet_campaigns_mine(DOGNET_AD_CHANNEL_ID, status=1)  # approved
+    except Exception as e:
+        st.error(f"Dognet campaigns fetch failed: {e}")
+        return
+
+    feed_rows = []
+    try:
+        feed_rows = dognet_feeds()
+    except Exception:
+        feed_rows = []
+    feeds_by_campaign: dict[str, list[str]] = {}
+    for f in feed_rows:
+        cid = str(f.get("campaign_id") or f.get("campaignId") or "").strip()
+        u = str(f.get("url") or f.get("feed_url") or f.get("link") or "").strip()
+        if cid and u:
+            feeds_by_campaign.setdefault(cid, []).append(u)
+
+    norm = []
+    for c in campaigns:
+        cid = c.get("id") or c.get("campaign_id") or c.get("campaignId")
+        name = c.get("name") or c.get("title") or c.get("campaign_name") or "(unknown)"
+        url = c.get("url") or c.get("website") or c.get("landing_page") or ""
+        cid_str = str(cid) if cid is not None else ""
+        feed = ", ".join(feeds_by_campaign.get(cid_str, [])) if cid_str else ""
+        norm.append({
+            "Campaign ID": cid_str,
+            "Name": name,
+            "Website": url,
+            "Feed": feed,
+        })
+
+    st.caption(
+        "Shows approved campaigns for your configured Dognet ad channel. "
+        "Feed URLs appear only when your account has access."
+    )
+
+    try:
+        st.dataframe(
+            norm,
+            use_container_width=True,
+            height=520,
+            column_config={
+                "Website": st.column_config.LinkColumn("Website"),
+                "Feed": st.column_config.LinkColumn("Feed"),
+            },
+        )
+    except Exception:
+        st.dataframe(norm, use_container_width=True, height=520)
+
 # -------------------- SIDEBAR (define inputs FIRST) --------------------
 with st.sidebar:
     st.subheader("Filters")
 
       # Networks
-    network_options = ["AWIN", "Addrevenue", "Impact", "Partnerize", "2Performant"]
+    network_options = ["AWIN", "Addrevenue", "Impact", "Partnerize", "2Performant", "Dognet"]
 
     networks = st.multiselect(
         "Networks",
@@ -2226,6 +2578,7 @@ awin_metrics = _blank_metrics()
 addrev_metrics = _blank_metrics()
 impact_metrics = _blank_metrics()
 partnerize_metrics = _blank_metrics()
+dognet_metrics = _blank_metrics()
 
 # ----- AWIN -----
 if "AWIN" in networks:
@@ -2289,6 +2642,7 @@ awin_metrics = _normalize_metrics(awin_metrics)
 addrev_metrics = _normalize_metrics(addrev_metrics)
 impact_metrics = _normalize_metrics(impact_metrics)
 partnerize_metrics = _normalize_metrics(partnerize_metrics)
+dognet_metrics = _normalize_metrics(dognet_metrics)
 
 partnerize_metrics = _blank_metrics()
 
@@ -2310,23 +2664,47 @@ if "Partnerize" in networks:
             "(PARTNERIZE_APP_KEY / PARTNERIZE_USER_API_KEY / PARTNERIZE_PUBLISHER_ID in .env)."
         )
 
+# ----- Dognet -----
+if "Dognet" in networks:
+    if _dognet_configured():
+        try:
+            dognet_metrics = dognet_commission_aggregate(
+                start.isoformat(),
+                end.isoformat(),
+                subrefs=(clickrefs if clickrefs else None),
+                contains=match_contains,
+                target_ccy=(os.getenv("PREFERRED_CURRENCY") or "EUR"),
+            )
+        except Exception as e:
+            st.warning(f"Dognet earnings failed: {e}")
+            dognet_metrics = _blank_metrics()
+    else:
+        st.info(
+            "Dognet is selected, but Dognet API credentials are not configured "
+            "(DOGNET_EMAIL / DOGNET_PASSWORD in .env)."
+        )
+
+
 total_comm = (
     awin_metrics["total_comm"]
     + addrev_metrics["total_comm"]
     + impact_metrics["total_comm"]
     + partnerize_metrics["total_comm"]
+    + dognet_metrics["total_comm"]
 )
 confirmed_comm = (
     awin_metrics["confirmed_comm"]
     + addrev_metrics["confirmed_comm"]
     + impact_metrics["confirmed_comm"]
     + partnerize_metrics["confirmed_comm"]
+    + dognet_metrics["confirmed_comm"]
 )
 pending_comm = (
     awin_metrics["pending_comm"]
     + addrev_metrics["pending_comm"]
     + impact_metrics["pending_comm"]
     + partnerize_metrics["pending_comm"]
+    + dognet_metrics["pending_comm"]
 )
 
 ccy = (os.getenv("PREFERRED_CURRENCY") or "EUR").upper()
@@ -3505,6 +3883,8 @@ if "Partnerize" in networks:
     net_tabs.append("Partnerize")
 if "2Performant" in networks:
     net_tabs.append("2Performant")
+if "Dognet" in networks:
+    net_tabs.append("Dognet")
 
 def _render_country(cc: str):
     if len(net_tabs) > 1:
@@ -3530,6 +3910,8 @@ def _render_country(cc: str):
                     )
                 elif net == "2Performant":
                     render_2performant_merchants_table(cc)
+                elif net == "Dognet":
+                    render_dognet_merchants_table(cc)
     else:
         if "AWIN" in networks:
             render_awin_merchants_table(
@@ -3549,6 +3931,8 @@ def _render_country(cc: str):
             )
         if "2Performant" in networks:
             render_2performant_merchants_table(cc)
+        if "Dognet" in networks:
+            render_dognet_merchants_table(cc)
 
 if len(countries_list) > 1:
     country_tabs = st.tabs(countries_list)
