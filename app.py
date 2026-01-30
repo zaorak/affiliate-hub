@@ -2411,19 +2411,15 @@ def dognet_commission_aggregate(start_date: str, end_date: str, subrefs: list[st
         },
     }
 
-@st.cache_data(show_spinner=False, ttl=60*60)  # 1 time cache
+@st.cache_data(show_spinner=False, ttl=60*60)  # cache 1 time
 def dognet_feeds_all(per_page: int = 1000) -> list[dict]:
-    if not _dognet_configured():
-        return []
-
     per_page = max(1, min(int(per_page), 1000))
     all_rows: list[dict] = []
     page = 1
 
     while True:
-        # Dognet docs siger pagination kan ligge i query eller body.
-        # For GET bruger vi query params.
         resp = dognet_get("/campaigns/feeds", params={"per-page": per_page, "page": page}) or {}
+
         rows = resp.get("data") if isinstance(resp, dict) else None
         if rows is None:
             rows = resp if isinstance(resp, list) else []
@@ -2435,14 +2431,12 @@ def dognet_feeds_all(per_page: int = 1000) -> list[dict]:
 
         all_rows.extend(rows)
 
-        # hvis vi fik mindre end per_page, er vi færdige
+        # færdig hvis sidste page er kortere end per_page
         if len(rows) < per_page:
             break
 
         page += 1
-
-        # safety (bare for at undgå uendeligt loop hvis API opfører sig mærkeligt)
-        if page > 50:
+        if page > 50:  # safety
             break
 
     return all_rows
@@ -2481,17 +2475,19 @@ def render_dognet_merchants_table(country_code: str):
 
     # ... resten af din tabel/rendering kode fortsætter her ...
 
+feed_rows = []
+try:
+    # Fetch ALL feeds via filter endpoint using pagination in BODY (more reliable than GET params)
+    feed_rows = dognet_feeds_filter_all(filter_obj={}, per_page=1000)
+except Exception:
     feed_rows = []
-    try:
-        feed_rows = dognet_feeds_all(per_page=1000)
-    except Exception:
-        feed_rows = []
-    feeds_by_campaign: dict[str, list[str]] = {}
-    for f in feed_rows:
-        cid = str(f.get("campaign_id") or f.get("campaignId") or "").strip()
-        u = str(f.get("url") or f.get("feed_url") or f.get("link") or "").strip()
-        if cid and u:
-            feeds_by_campaign.setdefault(cid, []).append(u)
+
+feeds_by_campaign: dict[str, list[str]] = {}
+for f in feed_rows:
+    cid = str(f.get("campaign_id") or f.get("campaignId") or "").strip()
+    u = str(f.get("url") or f.get("feed_url") or f.get("link") or "").strip()
+    if cid and u:
+        feeds_by_campaign.setdefault(cid, []).append(u)
 
     norm = []
     for c in campaigns:
