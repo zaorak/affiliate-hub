@@ -2121,30 +2121,56 @@ def cached_awin_tracking_link(advertiser_id: int, clickref: str | None = None) -
     cref = quote((clickref or "").strip())
     return f"https://ui.awin.com/affiliate/affiliate-tools/link-builder?awinmid={advertiser_id}&clickref={cref}"
 
-# ----- Dognet (affiliate) – login + campaigns + tracking links + feeds + commissions -----
+# =========================
+# DOGNET INTEGRATION (FULL)
+# =========================
+
+import os
+import time
+import requests
+import streamlit as st
 
 DOGNET_BASE = (os.getenv("DOGNET_BASE") or "https://api.app.dognet.com/api/v1").rstrip("/")
 DOGNET_EMAIL = (os.getenv("DOGNET_EMAIL") or "").strip()
 DOGNET_PASSWORD = (os.getenv("DOGNET_PASSWORD") or "").strip()
+
+# Prefer DOGNET_AD_CHANNEL_IDS="31109,31107,31105,31103"
 DOGNET_AD_CHANNEL_IDS = (os.getenv("DOGNET_AD_CHANNEL_IDS") or "").strip()
-DOGNET_AD_CHANNEL_ID = (os.getenv("DOGNET_AD_CHANNEL_ID") or "").strip()  # fallback
-def dognet_channel_ids() -> list[int]:
-    raw = DOGNET_AD_CHANNEL_IDS or DOGNET_AD_CHANNEL_ID
-    if not raw:
-        return []
-    ids = []
-    for part in raw.split(","):
-        part = part.strip()
-        if part:
-            ids.append(int(part))
-    return ids
+# Fallback single id
+DOGNET_AD_CHANNEL_ID = (os.getenv("DOGNET_AD_CHANNEL_ID") or "").strip()
+
 
 def _dognet_configured() -> bool:
     return bool(DOGNET_BASE and DOGNET_EMAIL and DOGNET_PASSWORD)
 
+
+def dognet_channel_ids() -> list[int]:
+    """
+    Returns list of ad channel IDs from DOGNET_AD_CHANNEL_IDS (comma-separated) or fallback DOGNET_AD_CHANNEL_ID.
+    """
+    raw = DOGNET_AD_CHANNEL_IDS or DOGNET_AD_CHANNEL_ID
+    if not raw:
+        return []
+    ids: list[int] = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except Exception:
+            # ignore bad value
+            pass
+    return ids
+
+
 def _dognet_login() -> dict:
+    """
+    Logs in and stores token in st.session_state["_dognet_auth"].
+    """
     if not _dognet_configured():
-        return {}
+        raise RuntimeError("Dognet is not configured: missing DOGNET_EMAIL or DOGNET_PASSWORD (or DOGNET_BASE).")
+
     url = f"{DOGNET_BASE}/auth/login"
     r = requests.post(
         url,
@@ -2155,129 +2181,156 @@ def _dognet_login() -> dict:
     r.raise_for_status()
     data = r.json() or {}
 
+    # Token field can vary; try common keys
     token = data.get("token") or data.get("access_token") or (data.get("data") or {}).get("token")
     if not token:
-        raise RuntimeError("Dognet login succeeded but response did not include token.")
+        raise RuntimeError("Dognet login response did not include a token (token/access_token/data.token missing).")
+
     auth = {
         "token": token,
-        "timezone": data.get("timezone") or (data.get("data") or {}).get("timezone"),
+        "timezone": data.get("timezone") or (data.get("data") or {}).get("timezone") or "",
         "currency": (data.get("currency") or (data.get("data") or {}).get("currency") or "EUR").upper(),
         "obtained_at": time.time(),
     }
     st.session_state["_dognet_auth"] = auth
     return auth
 
+
 def _dognet_auth() -> dict:
-    if not _dognet_configured():
-        return {}
+    """
+    Returns cached auth (token). If missing, logs in.
+    """
     auth = st.session_state.get("_dognet_auth") or {}
     if not auth.get("token"):
         auth = _dognet_login()
     return auth
 
+
 def _dognet_request(method: str, path: str, params: dict | None = None, json_body=None, retry401: bool = True):
+    """
+    Low-level request wrapper with:
+    - Bearer token
+    - auto re-login on 401 (once)
+    - simple retry on 429 using Retry-After
+    """
     if not _dognet_configured():
-        return {}
+        raise RuntimeError("Dognet not configured (DOGNET_EMAIL/DOGNET_PASSWORD missing).")
+
     if not path.startswith("/"):
         path = "/" + path
+
     url = f"{DOGNET_BASE}{path}"
     auth = _dognet_auth()
+
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "Authorization": f"Bearer {auth.get('token','')}",
     }
 
-    r = requests.request(method, url, headers=headers, params=params or {}, json=json_body, timeout=60)
+    r = requests.request(method, url, headers=headers, params=params or {}, json=json_body, timeout=90)
 
-    # token expired? retry once
+    # token expired -> retry once with fresh login
     if r.status_code == 401 and retry401:
         st.session_state.pop("_dognet_auth", None)
         auth = _dognet_login()
         headers["Authorization"] = f"Bearer {auth.get('token','')}"
-        r = requests.request(method, url, headers=headers, params=params or {}, json=json_body, timeout=60)
+        r = requests.request(method, url, headers=headers, params=params or {}, json=json_body, timeout=90)
 
-    # rate limit
+    # rate limit -> wait and retry
     if r.status_code == 429:
         retry_after = int(r.headers.get("Retry-After") or "1")
         time.sleep(max(1, retry_after))
         return _dognet_request(method, path, params=params, json_body=json_body, retry401=retry401)
 
-    r.raise_for_status()
+    # raise errors
+    if not r.ok:
+        # include response text for debugging
+        raise RuntimeError(f"Dognet API error {r.status_code} on {path}: {r.text}")
+
     try:
         return r.json()
     except Exception:
         return {}
 
+
 def dognet_get(path: str, params: dict | None = None) -> dict:
     return _dognet_request("GET", path, params=params)
+
 
 def dognet_post(path: str, json_body=None, params: dict | None = None) -> dict:
     return _dognet_request("POST", path, params=params, json_body=json_body)
 
-@st.cache_data(show_spinner=False, ttl=6*60*60)
+
+@st.cache_data(show_spinner=False, ttl=6 * 60 * 60)
 def dognet_ad_channels() -> list[dict]:
-    if not _dognet_configured():
-        return []
-    data = dognet_get("/ad-channels") or {}
-    rows = data.get("data") if isinstance(data, dict) else None
+    """
+    GET /ad-channels
+    Cached because it’s mostly static.
+    """
+    resp = dognet_get("/ad-channels") or {}
+    rows = resp.get("data") if isinstance(resp, dict) else None
     if rows is None:
-        # some APIs return list directly
-        rows = data if isinstance(data, list) else []
+        rows = resp if isinstance(resp, list) else []
     if isinstance(rows, dict):
         rows = [rows]
     return rows or []
 
-def dognet_ad_channel_code(ad_channel_id: int | str) -> str:
-    try:
-        target = int(str(ad_channel_id))
-    except Exception:
-        return ""
+
+def dognet_ad_channel_code(ad_channel_id: int) -> str:
+    """
+    Finds channel code/chid for a given channel id (if returned by /ad-channels).
+    """
     for ch in dognet_ad_channels():
         cid = ch.get("id") or ch.get("ad_channel_id")
         try:
-            if int(str(cid)) == target:
+            if int(cid) == int(ad_channel_id):
                 return str(ch.get("code") or ch.get("chid") or ch.get("ad_channel_code") or "").strip()
         except Exception:
             continue
     return ""
 
-def dognet_campaigns_mine(ad_channel_id: int | str, status: int = 1) -> list[dict]:
-    if not _dognet_configured():
-        return []
+
+def dognet_campaigns_mine(ad_channel_id: int, status: int = 1) -> list[dict]:
+    """
+    POST /campaigns/mine/filter
+    status: 1 approved, 2 pending, 3 declined
+    """
     body = {
         "filter": [
-            {"ad_channel_id": {"eq": int(str(ad_channel_id))}},
+            {"ad_channel_id": {"eq": int(ad_channel_id)}},
             {"ad_channel_in_campaign_status": {"eq": int(status)}},
         ]
     }
-    data = dognet_post("/campaigns/mine/filter", json_body=body) or {}
-    rows = data.get("data") if isinstance(data, dict) else None
+    resp = dognet_post("/campaigns/mine/filter", json_body=body) or {}
+    rows = resp.get("data") if isinstance(resp, dict) else None
     if rows is None:
-        rows = data if isinstance(data, list) else []
+        rows = resp if isinstance(resp, list) else []
     if isinstance(rows, dict):
         rows = [rows]
     return rows or []
 
-def dognet_generate_link(ad_channel_id: int | str, campaign_id: int | str, url: str, data1: str = "", data2: str = "", url_type: int = 3) -> str:
-    if not _dognet_configured():
-        return ""
+
+def dognet_generate_link(ad_channel_id: int, campaign_id: int, url: str, data1: str = "", data2: str = "", url_type: int = 3) -> str:
+    """
+    POST /campaigns/links/generate
+    """
     body = {
-        "ad_channel_id": int(str(ad_channel_id)),
-        "campaign_id": int(str(campaign_id)),
+        "ad_channel_id": int(ad_channel_id),
+        "campaign_id": int(campaign_id),
         "url": url,
         "data1": data1 or "",
         "data2": data2 or "",
         "url_type": int(url_type),
     }
-    data = dognet_post("/campaigns/links/generate", json_body=body) or {}
-    # best-effort field detection
-    if isinstance(data, dict):
+    resp = dognet_post("/campaigns/links/generate", json_body=body) or {}
+
+    if isinstance(resp, dict):
         for k in ("link", "url", "affiliate_link", "tracking_url"):
-            v = data.get(k)
+            v = resp.get(k)
             if v and str(v).startswith("http"):
                 return str(v)
-        inner = data.get("data") or {}
+        inner = resp.get("data") or {}
         if isinstance(inner, dict):
             for k in ("link", "url", "affiliate_link", "tracking_url"):
                 v = inner.get(k)
@@ -2285,142 +2338,32 @@ def dognet_generate_link(ad_channel_id: int | str, campaign_id: int | str, url: 
                     return str(v)
     return ""
 
-def _dognet_amount(r: dict) -> float:
-    for k in (
-        "publisher_commission",
-        "commission",
-        "commission_amount",
-        "commission_value",
-        "payout",
-        "amount",
-        "value",
-        "price_commission",
-    ):
-        v = r.get(k)
-        if v is None:
-            continue
-        try:
-            return float(str(v).replace(",", "").strip())
-        except Exception:
-            pass
-    return 0.0
 
-def _dognet_status(r: dict) -> str:
-    return str(r.get("rstatus") or r.get("status") or "").strip().upper()
+def dognet_feeds_filter_all(filter_obj: dict | None = None, per_page: int = 1000) -> list[dict]:
+    """
+    Fetch ALL feeds via POST /campaigns/feeds/filter using pagination in BODY.
+    This is more reliable than GET query params across some backends.
 
-def dognet_transactions_filter(start_dt: str, end_dt: str, per_page: int = 500, subrefs: list[str] | None = None, contains: bool = False):
-    # returns list of rows using last_id scrolling (stop when data empty)
-    if not _dognet_configured():
-        return []
-
-    flt = [
-        {"rstatus": {"in": ["A", "P"]}},
-        {"created_at": {"gte": start_dt}},
-        {"created_at": {"lte": end_dt}},
-    ]
-
-    last_id = None
-    out = []
-    safety_pages = 0
-    while True:
-        body = {"filter": flt, "per-page": int(per_page)}
-        if last_id is not None:
-            body["last_id"] = last_id
-        resp = dognet_post("/raw-transactions/filter", json_body=body) or {}
-        data_rows = resp.get("data") if isinstance(resp, dict) else None
-        if data_rows is None:
-            data_rows = resp if isinstance(resp, list) else []
-        if isinstance(data_rows, dict):
-            data_rows = [data_rows]
-        if not data_rows:
-            break
-
-        # client-side subref filtering (Dognet filter docs don't list subref fields)
-        if subrefs:
-            srefs = [str(x).strip() for x in subrefs if str(x).strip()]
-            if srefs:
-                def _hit(row: dict) -> bool:
-                    fields = [
-                        row.get("data1"), row.get("data2"),
-                        row.get("subid"), row.get("sub_id"),
-                        row.get("clickref"), row.get("click_ref"),
-                        row.get("click_id"), row.get("clickid"),
-                    ]
-                    text = " ".join([str(v) for v in fields if v is not None])
-                    if contains:
-                        t = text.lower()
-                        return any(s.lower() in t for s in srefs)
-                    return any(s == str(v).strip() for s in srefs for v in fields if v is not None)
-                data_rows = [r for r in data_rows if _hit(r)]
-
-        out.extend(data_rows)
-
-        meta = (resp.get("meta") if isinstance(resp, dict) else None) or {}
-        last_id = meta.get("last_id")
-        if last_id is None:
-            mx = None
-            for rr in data_rows:
-                try:
-                    rid = int(str(rr.get("id")))
-                    mx = rid if mx is None else max(mx, rid)
-                except Exception:
-                    pass
-            last_id = mx
-
-        safety_pages += 1
-        if safety_pages > 2000:
-            break
-
-    return out
-
-def dognet_commission_aggregate(start_date: str, end_date: str, subrefs: list[str] | None = None, contains: bool = False, target_ccy: str | None = None) -> dict:
-    if not _dognet_configured():
-        return {"total_comm": 0.0, "confirmed_comm": 0.0, "pending_comm": 0.0, "raw": [], "meta": {}}
-
-    start_dt = f"{start_date} 00:00:00"
-    end_dt = f"{end_date} 23:59:59"
-
-    rows = dognet_transactions_filter(start_dt, end_dt, per_page=500, subrefs=subrefs, contains=contains)
-
-    auth = _dognet_auth()
-    src_ccy = (auth.get("currency") or "EUR").upper()
-    tgt = (target_ccy or src_ccy).upper()
-    fx = get_fx_rate(src_ccy, tgt) if src_ccy != tgt else 1.0
-
-    confirmed = pending = 0.0
-    for r in rows:
-        stt = _dognet_status(r)
-        amt = _dognet_amount(r)
-        if stt == "A":
-            confirmed += amt
-        elif stt == "P":
-            pending += amt
-
-    return {
-        "total_comm": (confirmed + pending) * fx,
-        "confirmed_comm": confirmed * fx,
-        "pending_comm": pending * fx,
-        "raw": rows,
-        "meta": {
-            "source_currency": src_ccy,
-            "target_currency": tgt,
-            "fx_rate_used": fx,
-            "window": f"{start_date} → {end_date}",
-            "timezone": auth.get("timezone") or "",
-            "ad_channel_id": DOGNET_AD_CHANNEL_ID or "",
-        },
-    }
-
-@st.cache_data(show_spinner=False, ttl=60*60)  # cache 1 time
-def dognet_feeds_all(per_page: int = 1000) -> list[dict]:
+    Tries both 'per-page' and 'per_page' (some setups accept only one naming).
+    """
     per_page = max(1, min(int(per_page), 1000))
     all_rows: list[dict] = []
     page = 1
+    filter_obj = filter_obj or {}
 
     while True:
-        resp = dognet_get("/campaigns/feeds", params={"per-page": per_page, "page": page}) or {}
+        # Attempt A: "per-page"
+        body_a = {"filter": filter_obj, "per-page": per_page, "page": page}
+        resp = dognet_post("/campaigns/feeds/filter", json_body=body_a) or {}
 
         rows = resp.get("data") if isinstance(resp, dict) else None
+
+        # Attempt B: "per_page" if A returns nothing
+        if rows is None or rows == []:
+            body_b = {"filter": filter_obj, "per_page": per_page, "page": page}
+            resp = dognet_post("/campaigns/feeds/filter", json_body=body_b) or {}
+            rows = resp.get("data") if isinstance(resp, dict) else None
+
         if rows is None:
             rows = resp if isinstance(resp, list) else []
         if isinstance(rows, dict):
@@ -2431,95 +2374,133 @@ def dognet_feeds_all(per_page: int = 1000) -> list[dict]:
 
         all_rows.extend(rows)
 
-        # færdig hvis sidste page er kortere end per_page
         if len(rows) < per_page:
             break
 
         page += 1
-        if page > 50:  # safety
+        if page > 200:  # safety
             break
 
     return all_rows
 
-def render_dognet_merchants_table(country_code: str):
-    st.subheader("Campaigns • Dognet")
+
+def dognet_build_feeds_by_campaign(feed_rows: list[dict]) -> dict[str, list[str]]:
+    """
+    Builds mapping: campaign_id -> list of feed URLs
+    """
+    feeds_by_campaign: dict[str, list[str]] = {}
+    for f in feed_rows:
+        cid = str(f.get("campaign_id") or f.get("campaignId") or "").strip()
+        u = str(f.get("url") or f.get("feed_url") or f.get("link") or "").strip()
+        if cid and u:
+            feeds_by_campaign.setdefault(cid, []).append(u)
+    return feeds_by_campaign
+
+
+def render_dognet_feeds_and_campaigns():
+    """
+    Streamlit UI helper: shows campaigns (approved across your channels) + all feeds (~1200)
+    Safe to call from your tabs/sections.
+    """
+    st.subheader("Dognet • Product Feeds & Campaigns")
 
     if not _dognet_configured():
-        st.info("Dognet is selected, but DOGNET_EMAIL / DOGNET_PASSWORD are not configured in .env.")
+        st.error("Dognet is not configured. Set DOGNET_EMAIL and DOGNET_PASSWORD in Railway.")
         return
 
     ids = dognet_channel_ids()
     if not ids:
-        st.info('Tip: set DOGNET_AD_CHANNEL_IDS="31109,31107,31105,31103" in Railway/.env')
+        st.info('Set DOGNET_AD_CHANNEL_IDS="31109,31107,31105,31103" in Railway Variables.')
         return
 
-    try:
-        campaigns = []
-        for ad_channel_id in ids:
-            campaigns.extend(dognet_campaigns_mine(ad_channel_id, status=1))  # approved
+    # Optional cache clear button (helps if empty list got cached earlier)
+    colA, colB = st.columns([1, 3])
+    with colA:
+        if st.button("Clear Dognet cache"):
+            st.cache_data.clear()
+            st.success("Cache cleared. Reload the page.")
+    with colB:
+        st.caption("Tip: If you previously had missing env vars, Streamlit may have cached empty results.")
 
-        # Deduplicate by campaign id (same campaign can appear for multiple channels)
+    # Fetch feeds (ALL)
+    try:
+        with st.spinner("Fetching ALL Dognet feeds (paginated)..."):
+            feed_rows = dognet_feeds_filter_all(filter_obj={}, per_page=1000)
+        st.write("Feeds fetched:", len(feed_rows))
+    except Exception as e:
+        st.error("Dognet feed fetch failed:")
+        st.exception(e)
+        return
+
+    feeds_by_campaign = dognet_build_feeds_by_campaign(feed_rows)
+
+    # Fetch approved campaigns across all channels (dedupe)
+    try:
+        with st.spinner("Fetching approved campaigns for all your ad channels..."):
+            campaigns = []
+            for ad_channel_id in ids:
+                campaigns.extend(dognet_campaigns_mine(ad_channel_id, status=1))
+
+        # dedupe campaigns by id
         dedup = {}
         for c in campaigns:
             cid = c.get("id") or c.get("campaign_id") or c.get("campaignId")
             key = str(cid) if cid is not None else None
             if key:
                 dedup[key] = c
-            else:
-                dedup[f"noid-{len(dedup)}"] = c
         campaigns = list(dedup.values())
-
+        st.write("Approved campaigns fetched:", len(campaigns))
     except Exception as e:
-        st.error(f"Dognet campaigns fetch failed: {e}")
-        return
+        st.error("Dognet campaigns fetch failed:")
+        st.exception(e)
+        campaigns = []
 
-    # ... resten af din tabel/rendering kode fortsætter her ...
-
-feed_rows = []
-try:
-    # Fetch ALL feeds via filter endpoint using pagination in BODY (more reliable than GET params)
-    feed_rows = dognet_feeds_filter_all(filter_obj={}, per_page=1000)
-except Exception:
-    feed_rows = []
-
-feeds_by_campaign: dict[str, list[str]] = {}
-for f in feed_rows:
-    cid = str(f.get("campaign_id") or f.get("campaignId") or "").strip()
-    u = str(f.get("url") or f.get("feed_url") or f.get("link") or "").strip()
-    if cid and u:
-        feeds_by_campaign.setdefault(cid, []).append(u)
-
-    norm = []
+    # Build a simple table that includes feed urls for the campaign id
+    rows = []
     for c in campaigns:
         cid = c.get("id") or c.get("campaign_id") or c.get("campaignId")
-        name = c.get("name") or c.get("title") or c.get("campaign_name") or "(unknown)"
-        url = c.get("url") or c.get("website") or c.get("landing_page") or ""
         cid_str = str(cid) if cid is not None else ""
-        feed = ", ".join(feeds_by_campaign.get(cid_str, [])) if cid_str else ""
-        norm.append({
-            "Campaign ID": cid_str,
-            "Name": name,
-            "Website": url,
-            "Feed": feed,
-        })
-
-    st.caption(
-        "Shows approved campaigns for your configured Dognet ad channel. "
-        "Feed URLs appear only when your account has access."
-    )
-
-    try:
-        st.dataframe(
-            norm,
-            use_container_width=True,
-            height=520,
-            column_config={
-                "Website": st.column_config.LinkColumn("Website"),
-                "Feed": st.column_config.LinkColumn("Feed"),
-            },
+        name = c.get("name") or c.get("title") or c.get("campaign_name") or "(unknown)"
+        website = c.get("url") or c.get("website") or c.get("landing_page") or ""
+        feed_urls = feeds_by_campaign.get(cid_str, [])
+        rows.append(
+            {
+                "campaign_id": cid_str,
+                "name": name,
+                "website": website,
+                "feeds_count": len(feed_urls),
+                "feed_urls": "\n".join(feed_urls[:5]) + ("\n..." if len(feed_urls) > 5 else ""),
+            }
         )
-    except Exception:
-        st.dataframe(norm, use_container_width=True, height=520)
+
+    if rows:
+        st.dataframe(rows, use_container_width=True, height=520)
+        st.caption("Note: 'feed_urls' is truncated to first 5 per campaign in the table (to keep it readable).")
+    else:
+        st.info("No approved campaigns returned. You may still have feeds, but campaigns list is empty.")
+
+    # Show ALL feeds in a pageable view (so 1200 is manageable)
+    st.markdown("### All product feeds")
+    page_size = st.selectbox("Rows per page", [50, 100, 200, 500, 1000], index=1, key="dognet_feed_page_size")
+    max_page = max(1, (len(feed_rows) + page_size - 1) // page_size)
+    page = st.number_input("Page", min_value=1, max_value=max_page, value=1, step=1, key="dognet_feed_page")
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    # Make a readable subset for dataframe (URLs etc.)
+    feed_view = []
+    for f in feed_rows[start:end]:
+        feed_view.append(
+            {
+                "campaign_id": str(f.get("campaign_id") or f.get("campaignId") or ""),
+                "url": str(f.get("url") or f.get("feed_url") or f.get("link") or ""),
+                "format": f.get("format") or f.get("format_id") or "",
+                "type": f.get("type") or f.get("type_id") or "",
+                "locale_id": f.get("locale_id") or f.get("localeId") or "",
+            }
+        )
+
+    st.dataframe(feed_view, use_container_width=True, height=650)
 
 # -------------------- SIDEBAR (define inputs FIRST) --------------------
 with st.sidebar:
