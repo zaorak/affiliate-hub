@@ -2411,17 +2411,41 @@ def dognet_commission_aggregate(start_date: str, end_date: str, subrefs: list[st
         },
     }
 
-@st.cache_data(show_spinner=False, ttl=6*60*60)
-def dognet_feeds() -> list[dict]:
+@st.cache_data(show_spinner=False, ttl=60*60)  # 1 time cache
+def dognet_feeds_all(per_page: int = 1000) -> list[dict]:
     if not _dognet_configured():
         return []
-    data = dognet_get("/campaigns/feeds") or {}
-    rows = data.get("data") if isinstance(data, dict) else None
-    if rows is None:
-        rows = data if isinstance(data, list) else []
-    if isinstance(rows, dict):
-        rows = [rows]
-    return rows or []
+
+    per_page = max(1, min(int(per_page), 1000))
+    all_rows: list[dict] = []
+    page = 1
+
+    while True:
+        # Dognet docs siger pagination kan ligge i query eller body.
+        # For GET bruger vi query params.
+        resp = dognet_get("/campaigns/feeds", params={"per-page": per_page, "page": page}) or {}
+        rows = resp.get("data") if isinstance(resp, dict) else None
+        if rows is None:
+            rows = resp if isinstance(resp, list) else []
+        if isinstance(rows, dict):
+            rows = [rows]
+
+        if not rows:
+            break
+
+        all_rows.extend(rows)
+
+        # hvis vi fik mindre end per_page, er vi færdige
+        if len(rows) < per_page:
+            break
+
+        page += 1
+
+        # safety (bare for at undgå uendeligt loop hvis API opfører sig mærkeligt)
+        if page > 50:
+            break
+
+    return all_rows
 
 def render_dognet_merchants_table(country_code: str):
     st.subheader("Campaigns • Dognet")
@@ -2459,7 +2483,7 @@ def render_dognet_merchants_table(country_code: str):
 
     feed_rows = []
     try:
-        feed_rows = dognet_feeds()
+        feed_rows = dognet_feeds_all(per_page=1000)
     except Exception:
         feed_rows = []
     feeds_by_campaign: dict[str, list[str]] = {}
